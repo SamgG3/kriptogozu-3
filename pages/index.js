@@ -2,8 +2,35 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import dynamic from "next/dynamic"; // RealtimePanel'i client-only yükle
+import dynamic from "next/dynamic";
+
+// RealtimePanel'i client-only yükle
 const RealtimePanel = dynamic(() => import("../components/RealtimePanel"), { ssr: false });
+
+/** Yalnızca tarayıcıda render eden sarmalayıcı */
+function SafeClientOnly({ children, fallback = null }) {
+  const [ready, setReady] = useState(false);
+  useEffect(() => { setReady(true); }, []);
+  return ready ? children : fallback;
+}
+
+/** Hata olursa sayfayı düşürmek yerine mesaj gösterir */
+class ErrorBoundary extends React.Component {
+  constructor(props){ super(props); this.state = { hasError:false, err:null }; }
+  static getDerivedStateFromError(error){ return { hasError:true, err:error }; }
+  componentDidCatch(error, info){ if (typeof window !== "undefined") console.error("UI Error:", error, info); }
+  render(){
+    if(this.state.hasError){
+      return (
+        <div style={{padding:16, color:"#fca5a5"}}>
+          <b>Ön yüzde bir hata yakalandı.</b><br/>
+          Lütfen yenileyin. Sorun sürerse Realtime tabloyu geçici olarak kapatırız.
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const DEFAULTS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
 
@@ -15,8 +42,6 @@ const fmtPrice = (v)=>{
 };
 const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
   Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
-const pct = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
-  (v>=0?"+":"")+Number(v).toFixed(d)+"%";
 const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
 
 function biasFromLatest(L){
@@ -39,7 +64,7 @@ function biasFromLatest(L){
 export default function Home() {
   const router = useRouter();
 
-  const [symbols, setSymbols] = useState(DEFAULTS);
+  const [symbols] = useState(DEFAULTS);
   const [interval, setIntervalStr] = useState("1m");
   const [rows, setRows] = useState({});
   const [loading, setLoading] = useState(false);
@@ -52,7 +77,7 @@ export default function Home() {
       const res = await Promise.all(
         symbols.map(sym =>
           fetch(`/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`, { cache:"no-store" })
-            .then(r=>r.json())
+            .then(r=>r.ok ? r.json() : null)
             .catch(()=>null)
         )
       );
@@ -66,7 +91,7 @@ export default function Home() {
   useEffect(()=>{
     if (timer.current) clearInterval(timer.current);
     if (auto) timer.current = setInterval(load, 10000);
-    return ()=> clearInterval(timer.current);
+    return ()=> { if (timer.current) clearInterval(timer.current); };
   }, [auto, interval, symbols]);
 
   return (
@@ -95,12 +120,17 @@ export default function Home() {
           <div style={{fontWeight:700, opacity:.9}}>Canlı Akış (Binance Futures)</div>
           <div style={{opacity:.6, fontSize:12}}>Semboller: {symbols.join(", ")}</div>
         </div>
-        <RealtimePanel
-          symbols={symbols}
-          staleAfterMs={5000}
-          longShortFetchEveryMs={30000}
-          onOpenDetails={(symbol) => router.push(`/coin/${symbol}`)}
-        />
+
+        <ErrorBoundary>
+          <SafeClientOnly>
+            <RealtimePanel
+              symbols={symbols}
+              staleAfterMs={5000}
+              longShortFetchEveryMs={30000}
+              onOpenDetails={(symbol) => router.push(`/coin/${symbol}`)}
+            />
+          </SafeClientOnly>
+        </ErrorBoundary>
       </section>
 
       {/* 2) KART GÖRÜNÜMÜ */}
@@ -124,35 +154,38 @@ function CoinCard({ sym, row }) {
   const border = signal === "AL" ? "#1f7a4f" : signal === "SAT" ? "#7a2e2e" : "#2a2f45";
 
   return (
-    <Link href={`/coin/${sym}`} style={{ textDecoration:"none" }}>
-      <div style={{
-        background:"#151a2b",
-        border:`1px solid ${border}`,
-        borderRadius:12,
-        padding:14,
-        display:"grid",
-        gridTemplateColumns:"1fr auto",
-        alignItems:"center",
-        gap:10,
-        minHeight:86
-      }}>
-        <div style={{display:"grid", gap:4}}>
-          <div style={{fontWeight:800, fontSize:18, color:"#8bd4ff"}}>{sym}</div>
-          <div style={{opacity:.85}}>Son Fiyat: <b>{fmtPrice(close)}</b></div>
-        </div>
-        <div style={{textAlign:"right"}}>
-          <div style={{fontWeight:800, color}}>{signal}</div>
-          <div style={{opacity:.9, marginTop:4}}>
-            <span style={{color:"#20c997", fontWeight:700}}>Long {fmt(longPct,0)}%</span>
-            <span style={{opacity:.7}}> / </span>
-            <span style={{color:"#ff6b6b", fontWeight:700}}>Short {fmt(shortPct,0)}%</span>
+    <Link href={`/coin/${sym}`} legacyBehavior>
+      <a style={{ textDecoration:"none" }}>
+        <div style={{
+          background:"#151a2b",
+          border:`1px solid ${border}`,
+          borderRadius:12,
+          padding:14,
+          display:"grid",
+          gridTemplateColumns:"1fr auto",
+          alignItems:"center",
+          gap:10,
+          minHeight:86
+        }}>
+          <div style={{display:"grid", gap:4}}>
+            <div style={{fontWeight:800, fontSize:18, color:"#8bd4ff"}}>{sym}</div>
+            <div style={{opacity:.85}}>Son Fiyat: <b>{fmtPrice(close)}</b></div>
           </div>
-          <div style={{opacity:.6, fontSize:12, marginTop:6}}>Tıkla → detay</div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontWeight:800, color}}>{signal}</div>
+            <div style={{opacity:.9, marginTop:4}}>
+              <span style={{color:"#20c997", fontWeight:700}}>Long {fmt(longPct,0)}%</span>
+              <span style={{opacity:.7}}> / </span>
+              <span style={{color:"#ff6b6b", fontWeight:700}}>Short {fmt(shortPct,0)}%</span>
+            </div>
+            <div style={{opacity:.6, fontSize:12, marginTop:6}}>Tıkla → detay</div>
+          </div>
         </div>
-      </div>
+      </a>
     </Link>
   );
 }
+
 
 
 
