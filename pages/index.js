@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import dynamic from "next/dynamic";
 
-// (ÖNEMLİ) RealtimePanel'i yalnızca client'ta render et
+// RealtimePanel'i sadece client'ta çalıştır
 const RealtimePanel = dynamic(() => import("../components/RealtimePanel"), { ssr: false });
 
 const DEFAULTS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
@@ -70,17 +70,17 @@ export default function Home() {
   }, [auto, interval, symbols]);
 
   return (
-    <main style={{padding:"16px 18px", background:"#0b0b0f", minHeight:"100vh", color:"#e6e6e6"}}>
+    <main style={{padding:"16px 18px", background:"#0b0d14", minHeight:"100vh", color:"#f2f4f8", fontFamily:"system-ui, -apple-system, Segoe UI, Roboto, Arial"}}>
       {/* ÜST BAR */}
       <div style={{display:"flex", gap:12, alignItems:"center", marginBottom:12, flexWrap:"wrap"}}>
-        <h1 style={{margin:0, fontSize:20, fontWeight:800}}>KriptoGözü • Genel Panel</h1>
-        <span style={{opacity:.7}}>(kartlarda AI özet • detay için tıkla)</span>
+        <h1 style={{margin:0, fontSize:22, fontWeight:900}}>KriptoGözü • Genel Panel</h1>
+        <span style={{opacity:.85}}>(kartlarda AI özet • detay için tıkla)</span>
         <select value={interval} onChange={e=>setIntervalStr(e.target.value)}
-          style={{padding:"8px 10px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#e6e6e6", marginLeft:10}}>
+          style={{padding:"8px 10px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1", marginLeft:10}}>
           {["1m","5m","15m","1h","4h"].map(x=><option key={x} value={x}>{x}</option>)}
         </select>
         <button onClick={load} disabled={loading}
-          style={{padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700}}>
+          style={{padding:"8px 12px", background:"#1b2235", border:"1px solid #2e3750", borderRadius:10, color:"#fff", fontWeight:800}}>
           {loading? "Yükleniyor…" : "Yenile"}
         </button>
         <label style={{marginLeft:8, display:"flex", alignItems:"center", gap:8}}>
@@ -89,25 +89,36 @@ export default function Home() {
         </label>
       </div>
 
-      {/* 1) CANLI AKIŞ TABLOSU (WebSocket) */}
-      <section style={{marginBottom:16}}>
+      {/* 1) CANLI TABLO */}
+      <section style={{marginBottom:18}}>
         <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8}}>
-          <div style={{fontWeight:700, opacity:.9}}>Canlı Akış (Binance Futures)</div>
-          <div style={{opacity:.6, fontSize:12}}>Semboller: {symbols.join(", ")}</div>
+          <div style={{fontWeight:800, opacity:.95}}>Canlı Akış (Binance Futures)</div>
+          <div style={{opacity:.75, fontSize:12}}>Semboller: {symbols.join(", ")}</div>
         </div>
 
-        <RealtimePanel
-          symbols={symbols}
-          staleAfterMs={5000}
-          longShortFetchEveryMs={30000}
-          onOpenDetails={(symbol) => router.push(`/coin/${symbol}`)}
-        />
+        <div style={{border:"1px solid #232a3d", borderRadius:14, overflow:"hidden", background:"#0f1320"}}>
+          <div style={{display:"grid", gridTemplateColumns:"3fr 2fr 2fr 2fr 2fr 1fr", padding:"10px 12px", fontWeight:700, background:"#151b2c", color:"#dbe4ff"}}>
+            <div>Sembol</div>
+            <div style={{textAlign:"right"}}>Fiyat</div>
+            <div style={{textAlign:"right"}}>24s Değişim</div>
+            <div style={{textAlign:"center"}}>Risk</div>
+            <div style={{textAlign:"center"}}>Long/Short</div>
+            <div style={{textAlign:"center"}}>⭐</div>
+          </div>
+          {/* Realtime Panel */}
+          <RealtimePanel
+            symbols={symbols}
+            staleAfterMs={5000}
+            longShortFetchEveryMs={30000}
+            onOpenDetails={(symbol) => router.push(`/coin/${symbol}`)}
+          />
+        </div>
       </section>
 
-      {/* 2) KART GÖRÜNÜMÜ */}
+      {/* 2) KARTLAR */}
       <section>
-        <div style={{fontWeight:700, opacity:.9, margin:"8px 0 12px"}}>Hızlı Özet Kartları</div>
-        <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))", gap:12}}>
+        <div style={{fontWeight:800, opacity:.95, margin:"8px 0 12px"}}>Hızlı Özet Kartları</div>
+        <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(290px, 1fr))", gap:14}}>
           {symbols.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
         </div>
       </section>
@@ -117,45 +128,47 @@ export default function Home() {
 
 function CoinCard({ sym, row }) {
   const L = row?.latest || {};
-  const close = L.close;
+  const close = L?.close;
 
   const { longPct, shortPct } = biasFromLatest(L);
   const signal = longPct >= 55 ? "AL" : shortPct >= 55 ? "SAT" : "NÖTR";
-  const color  = signal === "AL" ? "#20c997" : signal === "SAT" ? "#ff6b6b" : "#89a";
-  const border = signal === "AL" ? "#1f7a4f" : signal === "SAT" ? "#7a2e2e" : "#2a2f45";
+  const color  = signal === "AL" ? "#22d39a" : signal === "SAT" ? "#ff6b6b" : "#a9b0c0";
+  const border = signal === "AL" ? "#1e7a57" : signal === "SAT" ? "#7a2e2e" : "#2b3247";
 
   return (
     <Link href={`/coin/${sym}`} legacyBehavior>
       <a style={{ textDecoration:"none" }}>
         <div style={{
-          background:"#151a2b",
+          background:"linear-gradient(180deg, #0f1320, #0c111b)",
           border:`1px solid ${border}`,
-          borderRadius:12,
-          padding:14,
+          borderRadius:14,
+          padding:16,
           display:"grid",
           gridTemplateColumns:"1fr auto",
           alignItems:"center",
           gap:10,
-          minHeight:86
+          minHeight:96,
+          boxShadow:"0 6px 18px rgba(0,0,0,.35)"
         }}>
-          <div style={{display:"grid", gap:4}}>
-            <div style={{fontWeight:800, fontSize:18, color:"#8bd4ff"}}>{sym}</div>
-            <div style={{opacity:.85}}>Son Fiyat: <b>{fmtPrice(close)}</b></div>
+          <div style={{display:"grid", gap:6}}>
+            <div style={{fontWeight:900, fontSize:18, color:"#8bd4ff", letterSpacing:.3}}>{sym}</div>
+            <div style={{opacity:.95, color:"#dbe4ff"}}>Son Fiyat: <b style={{color:"#ffffff"}}>{fmtPrice(close)}</b></div>
           </div>
           <div style={{textAlign:"right"}}>
-            <div style={{fontWeight:800, color}}>{signal}</div>
-            <div style={{opacity:.9, marginTop:4}}>
-              <span style={{color:"#20c997", fontWeight:700}}>Long {fmt(longPct,0)}%</span>
-              <span style={{opacity:.7}}> / </span>
-              <span style={{color:"#ff6b6b", fontWeight:700}}>Short {fmt(shortPct,0)}%</span>
+            <div style={{fontWeight:900, color, fontSize:18}}>{signal}</div>
+            <div style={{opacity:.95, marginTop:6, fontWeight:800}}>
+              <span style={{color:"#22d39a"}}>Long {fmt(longPct,0)}%</span>
+              <span style={{opacity:.6, margin:"0 6px"}}>/</span>
+              <span style={{color:"#ff6b6b"}}>Short {fmt(shortPct,0)}%</span>
             </div>
-            <div style={{opacity:.6, fontSize:12, marginTop:6}}>Tıkla → detay</div>
+            <div style={{opacity:.7, fontSize:12, marginTop:6, color:"#aab3c5"}}>Tıkla → detay</div>
           </div>
         </div>
       </a>
     </Link>
   );
 }
+
 
 
 
