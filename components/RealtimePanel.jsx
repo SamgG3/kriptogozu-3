@@ -1,3 +1,4 @@
+// components/RealtimePanel.jsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
@@ -7,6 +8,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
  * - Stale-data uyarısı (gecikirse kırmızı rozet)
  * - Otomatik yeniden bağlanma (exponential backoff + jitter)
  * - Periyodik Long/Short oranı (REST: globalLongShortAccountRatio)
+ * - SSR güvenli localStorage erişimi (window guard)
  */
 
 const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"];
@@ -31,17 +33,25 @@ function formatPct(n) {
   return `${sign}${n.toFixed(2)}%`;
 }
 
+// ---- SSR GÜVENLİ localStorage yardımcıları ----
 function useLocalStorage(key) {
+  const isClient = typeof window !== "undefined";
   const [bump, setBump] = useState(0);
+
   const get = useCallback(() => {
-    try { return JSON.parse(localStorage.getItem(key) || "[]"); } catch { return []; }
-  }, [key]);
+    if (!isClient) return [];
+    try { return JSON.parse(window.localStorage.getItem(key) || "[]"); } catch { return []; }
+  }, [key, isClient]);
+
   const set = useCallback((val) => {
-    localStorage.setItem(key, JSON.stringify(val));
+    if (!isClient) return;
+    window.localStorage.setItem(key, JSON.stringify(val));
     setBump((x) => x + 1);
-  }, [key]);
-  return { get, set, bump };
+  }, [key, isClient]);
+
+  return { get, set, bump, isClient };
 }
+// -----------------------------------------------
 
 export default function RealtimePanel({
   symbols = DEFAULT_SYMBOLS,
@@ -59,13 +69,14 @@ export default function RealtimePanel({
   const mountedRef = useRef(true);
 
   // Favoriler
-  const { get: getFavs, set: setFavs, bump: favsBump } = useLocalStorage("kg-favorites");
-  const favorites = useMemo(() => getFavs(), [getFavs, favsBump]);
+  const { get: getFavs, set: setFavs, bump: favsBump, isClient } = useLocalStorage("kg-favorites");
+  const favorites = useMemo(() => (isClient ? getFavs() : []), [getFavs, favsBump, isClient]);
 
   const combinedUrl = useMemo(() => buildCombinedStreamUrl(symbols), [symbols]);
 
-  // WebSocket bağlan
+  // WebSocket bağlan (sadece client)
   const connect = useCallback(() => {
+    if (typeof window === "undefined") return; // SSR guard
     try {
       setStatus("CONNECTING");
       setError(null);
@@ -158,7 +169,7 @@ export default function RealtimePanel({
     return () => clearInterval(iv);
   }, [status, staleAfterMs]);
 
-  // Long/Short oranlarını REST ile periyodik çek
+  // Long/Short oranlarını REST ile periyodik çek (CORS hata atarsa sessiz geçer)
   useEffect(() => {
     let abort = false;
 
@@ -183,6 +194,8 @@ export default function RealtimePanel({
       }
     }
 
+    if (typeof window === "undefined") return; // SSR guard
+
     // ilk tetikleme + periyodik
     symbols.forEach((s, idx) => setTimeout(() => fetchLS(s.toUpperCase()), idx * 350));
     const iv = setInterval(() => {
@@ -195,7 +208,7 @@ export default function RealtimePanel({
     };
   }, [symbols, longShortFetchEveryMs]);
 
-  const favSet = useMemo(() => new Set((favorites || []).map((x) => x.toUpperCase())), [favorites]);
+  const favSet = useMemo(() => new Set((favorites || []).map((x) => String(x).toUpperCase())), [favorites]);
 
   const rows = useMemo(() => {
     const list = Object.values(tickers);
@@ -208,7 +221,8 @@ export default function RealtimePanel({
   }, [tickers, favSet]);
 
   const toggleFavorite = (symbol) => {
-    const st = new Set((getFavs() || []).map((x) => x.toUpperCase()));
+    const current = Array.isArray(favorites) ? favorites : [];
+    const st = new Set(current.map((x) => String(x).toUpperCase()));
     const up = symbol.toUpperCase();
     if (st.has(up)) st.delete(up); else st.add(up);
     setFavs(Array.from(st));
@@ -265,7 +279,7 @@ export default function RealtimePanel({
 
               <div className="col-span-1 flex justify-center">
                 <FavStar
-                  active={Array.isArray(favorites) && favorites.map((x)=>x.toUpperCase()).includes(t.symbol)}
+                  active={Array.isArray(favorites) && favorites.map((x)=>String(x).toUpperCase()).includes(t.symbol)}
                   onClick={(e) => { e.stopPropagation(); toggleFavorite(t.symbol); }}
                 />
               </div>
@@ -344,3 +358,4 @@ function FavStar({ active, onClick }) {
     </span>
   );
 }
+
