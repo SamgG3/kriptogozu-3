@@ -1,5 +1,5 @@
 // pages/index.js
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import dynamic from "next/dynamic";
@@ -39,14 +39,22 @@ function biasFromLatest(L){
 export default function Home() {
   const router = useRouter();
 
-  // Tema & veri durumları
+  // Tema, arama ve veri durumları
   const [darkMode, setDarkMode] = useState(false);
+  const [query, setQuery] = useState("");
   const [symbols] = useState(DEFAULTS);
   const [interval, setIntervalStr] = useState("1m");
   const [rows, setRows] = useState({});
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
   const timer = useRef(null);
+
+  // Arama filtresi
+  const filtered = useMemo(()=>{
+    const q = query.trim().toUpperCase();
+    if (!q) return symbols;
+    return symbols.filter(s => s.includes(q));
+  }, [query, symbols]);
 
   const rootStyle = {
     padding: "16px 18px",
@@ -56,28 +64,28 @@ export default function Home() {
     fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial",
   };
 
-  async function load() {
+  async function load(list = filtered) {
     try {
       setLoading(true);
       const res = await Promise.all(
-        symbols.map(sym =>
+        list.map(sym =>
           fetch(`/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`, { cache:"no-store" })
             .then(r=>r.ok ? r.json() : null)
             .catch(()=>null)
         )
       );
       const map = {};
-      symbols.forEach((sym, i)=> map[sym] = res[i]);
+      list.forEach((sym, i)=> map[sym] = res[i]);
       setRows(map);
     } finally { setLoading(false); }
   }
 
-  useEffect(()=>{ load(); }, [interval, symbols]);
+  useEffect(()=>{ load(filtered); }, [interval, filtered]);
   useEffect(()=>{
     if (timer.current) clearInterval(timer.current);
-    if (auto) timer.current = setInterval(load, 10000);
+    if (auto) timer.current = setInterval(()=>load(filtered), 10000);
     return ()=> { if (timer.current) clearInterval(timer.current); };
-  }, [auto, interval, symbols]);
+  }, [auto, interval, filtered]);
 
   return (
     <main style={rootStyle}>
@@ -85,14 +93,25 @@ export default function Home() {
       <div style={{display:"flex", gap:12, alignItems:"center", marginBottom:12, flexWrap:"wrap"}}>
         <h1 style={{margin:0, fontSize:22, fontWeight:900}}>KriptoGözü • Genel Panel</h1>
         <span style={{opacity:.85}}>(kartlarda AI özet • detay için tıkla)</span>
+
+        {/* Arama kutusu */}
+        <input
+          value={query}
+          onChange={e=>setQuery(e.target.value)}
+          placeholder="Sembol ara (örn: BTC, ETH, DOGE)"
+          style={{padding:"8px 12px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1", minWidth:220}}
+        />
+
         <select value={interval} onChange={e=>setIntervalStr(e.target.value)}
-          style={{padding:"8px 10px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1", marginLeft:10}}>
+          style={{padding:"8px 10px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1"}}>
           {["1m","5m","15m","1h","4h"].map(x=><option key={x} value={x}>{x}</option>)}
         </select>
-        <button onClick={load} disabled={loading}
+
+        <button onClick={()=>load(filtered)} disabled={loading}
           style={{padding:"8px 12px", background:"#1b2235", border:"1px solid #2e3750", borderRadius:10, color:"#fff", fontWeight:800}}>
           {loading? "Yükleniyor…" : "Yenile"}
         </button>
+
         <button
           onClick={() => setDarkMode(v=>!v)}
           style={{ padding:"8px 12px", background:"#2a2f45", border:"1px solid #3a4360",
@@ -100,6 +119,7 @@ export default function Home() {
         >
           Tema: {darkMode ? "Koyu" : "Daha Koyu"}
         </button>
+
         <label style={{marginLeft:8, display:"flex", alignItems:"center", gap:8}}>
           <input type="checkbox" checked={auto} onChange={e=>setAuto(e.target.checked)}/>
           10 sn’de bir otomatik yenile
@@ -110,7 +130,7 @@ export default function Home() {
       <section style={{marginBottom:18}}>
         <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8}}>
           <div style={{fontWeight:800, opacity:.95}}>Canlı Akış (Binance Futures)</div>
-          <div style={{opacity:.75, fontSize:12}}>Semboller: {symbols.join(", ")}</div>
+          <div style={{opacity:.75, fontSize:12}}>Semboller: {filtered.join(", ") || "—"}</div>
         </div>
 
         <div style={{border:"1px solid #232a3d", borderRadius:14, overflow:"hidden", background:"#0f1320"}}>
@@ -124,7 +144,7 @@ export default function Home() {
           </div>
 
           <RealtimePanel
-            symbols={symbols}
+            symbols={filtered}
             staleAfterMs={5000}
             longShortFetchEveryMs={30000}
             onOpenDetails={(symbol) => router.push(`/coin/${symbol}`)}
@@ -136,7 +156,7 @@ export default function Home() {
       <section>
         <div style={{fontWeight:800, opacity:.95, margin:"8px 0 12px"}}>Hızlı Özet Kartları</div>
         <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(290px, 1fr))", gap:14}}>
-          {symbols.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
+          {(filtered.length? filtered : symbols).map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
         </div>
       </section>
     </main>
