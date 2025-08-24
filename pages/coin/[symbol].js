@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 
 const fmtPrice = (v)=>{
@@ -11,6 +11,33 @@ const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
   Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
 const pct = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
   (v>=0?"+":"")+Number(v).toFixed(d)+"%";
+const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
+
+function rsiInfo(r){
+  if (r==null) return "—";
+  if (r>=70) return "Aşırı Alım";
+  if (r<=30) return "Aşırı Satım";
+  return "Nötr";
+}
+
+function biasFromLatest(L){
+  if(!L) return { longPct:50, shortPct:50, score:0 };
+  const close=L.close, ema=L.ema20, rsi=L.rsi14, k=L.stochK, d=L.stochD, bu=L.bbUpper, bl=L.bbLower;
+  const emaDist = (close!=null && ema!=null) ? ((close-ema)/ema*100) : null;
+  const kCross  = (k!=null && d!=null) ? (k-d) : null;
+  const bandPos = (bu!=null && bl!=null && close!=null) ? ((close-bl)/(bu-bl)*100) : null;
+
+  const nEMA   = emaDist==null ? 0 : clamp(emaDist/3, -1, 1);
+  const nRSI   = rsi==null ? 0 : clamp((rsi-50)/25, -1, 1);
+  const nKxD   = kCross==null ? 0 : clamp(kCross/50, -1, 1);
+  const nBand  = bandPos==null ? 0 : clamp((bandPos-50)/30, -1, 1);
+
+  const wEMA=0.35, wRSI=0.30, wKxD=0.20, wBand=0.15;
+  const score = (wEMA*nEMA + wRSI*nRSI + wKxD*nKxD + wBand*nBand);
+  const longPct = Math.round( (score+1)/2 * 100 );
+  const shortPct = 100 - longPct;
+  return { longPct, shortPct, score };
+}
 
 export default function CoinPage({ symbolInit }) {
   const [symbol, setSymbol] = useState(symbolInit || "BTCUSDT");
@@ -40,12 +67,26 @@ export default function CoinPage({ symbolInit }) {
   const bandPos = (L.bbUpper!=null && L.bbLower!=null && L.close!=null) ? ((L.close-L.bbLower)/(L.bbUpper-L.bbLower)*100) : null;
   const kCross  = (L.stochK!=null && L.stochD!=null) ? (L.stochK-L.stochD) : null;
 
-  const score =
-    (emaDist!=null ? (emaDist>0 ? 1 : -1) : 0) +
-    (L.rsi14!=null ? (L.rsi14>55 ? 1 : L.rsi14<45 ? -1 : 0) : 0) +
-    (kCross!=null ? (kCross>0 ? 1 : -1) : 0);
-  const signal = score >= 2 ? "AL" : score <= -2 ? "SAT" : "NÖTR";
-  const color  = signal==="AL" ? "#20c997" : signal==="SAT" ? "#ff6b6b" : "#89a";
+  const { longPct, shortPct } = biasFromLatest(L);
+  const biasSignal = longPct>=55 ? "AL" : shortPct>=55 ? "SAT" : "NÖTR";
+  const color  = biasSignal==="AL" ? "#20c997" : biasSignal==="SAT" ? "#ff6b6b" : "#89a";
+
+  // Trade plan yönü & hedefler (R-multiple)
+  // Long ise Stop=BB Alt, Short ise Stop=BB Üst; TP1/2/3 = 1R/2R/3R
+  let entry = L.close, stop = null, tp1=null, tp2=null, tp3=null, rrText="R: 1R/2R/3R";
+  if (biasSignal==="AL" && L.bbLower!=null) {
+    stop = L.bbLower;
+    const R = entry - stop;                      // long: risk
+    tp1 = entry + R*1;
+    tp2 = entry + R*2;
+    tp3 = entry + R*3;
+  } else if (biasSignal==="SAT" && L.bbUpper!=null) {
+    stop = L.bbUpper;
+    const R = stop - entry;                      // short: risk
+    tp1 = entry - R*1;
+    tp2 = entry - R*2;
+    tp3 = entry - R*3;
+  }
 
   return (
     <main style={{padding:"24px"}}>
@@ -53,7 +94,15 @@ export default function CoinPage({ symbolInit }) {
         <Link href="/" style={{color:"#8bd4ff"}}>← Ana Sayfa</Link>
       </div>
 
-      <h1 style={{color:"#8bd4ff"}}>{symbol} ({iv})</h1>
+      <div style={{display:"flex", gap:12, alignItems:"center"}}>
+        <h1 style={{color:"#8bd4ff", margin:0}}>{symbol}</h1>
+        <select value={iv} onChange={e=>setIv(e.target.value)}
+          style={{padding:"6px 10px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#e6e6e6"}}>
+          {["1m","5m","15m","1h","4h"].map(x=><option key={x} value={x}>{x}</option>)}
+        </select>
+        <span style={{marginLeft:"auto", fontWeight:800, color}}>{biasSignal} • Long {longPct}% / Short {shortPct}%</span>
+      </div>
+
       {loading && <div>Yükleniyor…</div>}
       {err && <div style={{color:"red"}}>{err}</div>}
 
@@ -66,19 +115,21 @@ export default function CoinPage({ symbolInit }) {
         <Box label="Bollinger Üst" val={fmtPrice(L.bbUpper)} />
         <Box label="Bollinger Alt" val={fmtPrice(L.bbLower)} />
         <Box label="Bant Konumu" val={pct(bandPos)} />
-        <Box label="AI Sinyali" val={signal} color={color} />
+        <Box label="Long %" val={`${fmt(longPct,0)}%`} />
+        <Box label="Short %" val={`${fmt(shortPct,0)}%`} />
       </div>
 
       {/* Trade Plan */}
       <section style={{marginTop:30}}>
         <h2>AI Trade Plan (beta)</h2>
-        <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))", gap:12}}>
-          <Box label="Entry" val={fmtPrice(L.close)} />
-          <Box label="Stop Loss" val={fmtPrice(L.bbLower)} sub="Öneri: Bollinger Alt (yakın)" />
-          <Box label="TP1" val={fmtPrice(L.close*1.0038)} sub="≈ 1R" />
-          <Box label="TP2" val={fmtPrice(L.close*1.0078)} sub="≈ 2R" />
-          <Box label="TP3" val={fmtPrice(L.close*1.0118)} sub="≈ 3R" />
-          <Box label="Plan Özeti" val="Deneme → geliştirilecek" sub="R: 1R/2R/3R" />
+        <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))", gap:12}}>
+          <Box label="Yön" val={biasSignal} />
+          <Box label="Entry" val={fmtPrice(entry)} />
+          <Box label="Stop Loss" val={fmtPrice(stop)} sub={biasSignal==="AL" ? "Öneri: BB Alt" : biasSignal==="SAT" ? "Öneri: BB Üst" : ""} />
+          <Box label="TP1" val={fmtPrice(tp1)} sub="≈ 1R" />
+          <Box label="TP2" val={fmtPrice(tp2)} sub="≈ 2R" />
+          <Box label="TP3" val={fmtPrice(tp3)} sub="≈ 3R" />
+          <Box label="Plan Özeti" val="Deneme → geliştirilecek" sub="R isk-multiple tabanlı" />
         </div>
       </section>
     </main>
@@ -89,19 +140,13 @@ function Box({ label, val, sub, color }) {
   return (
     <div style={{background:"#151a2b", border:"1px solid #26304a", borderRadius:12, padding:14}}>
       <div style={{opacity:.8, marginBottom:4}}>{label}</div>
-      <div style={{fontWeight:800, fontSize:18, color:color||"#fff"}}>{val}</div>
+      <div style={{fontWeight:800, fontSize:18, color:color||"#fff"}}>{val??"—"}</div>
       {sub && <div style={{opacity:.6, fontSize:12}}>{sub}</div>}
     </div>
   );
 }
 
-function rsiInfo(r){
-  if (r==null) return "—";
-  if (r>=70) return "Aşırı Alım";
-  if (r<=30) return "Aşırı Satım";
-  return "Nötr";
-}
-
 export async function getServerSideProps({ params }) {
   return { props: { symbolInit: params.symbol.toUpperCase() } };
 }
+
