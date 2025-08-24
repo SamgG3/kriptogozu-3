@@ -1,341 +1,272 @@
 // components/RealtimePanel.jsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-/**
- * KriptoGözü – Realtime WebSocket Layer (Client-only)
- * Güvenli render: sayısal değerler gelmeden önce UI çökmez (guard'lı).
- */
+/** Client-only realtime tablo (inline-style, Tailwind yok) */
 
-const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"];
 const WS_BASE = "wss://fstream.binance.com/stream";
 const REST_BASE = "https://fapi.binance.com";
+const DEFAULT_SYMBOLS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
 
-// ---------- yardımcılar ----------
 const isNum = (v) => Number.isFinite(v);
-const showNum = (v, maxFrac = 6) =>
-  isNum(v) ? v.toLocaleString(undefined, { maximumFractionDigits: maxFrac }) : "—";
-const formatPct = (n) => (isNum(n) ? `${n > 0 ? "+" : ""}${n.toFixed(2)}%` : "—");
+const showNum = (v, max=6) => isNum(v) ? v.toLocaleString(undefined,{maximumFractionDigits:max}) : "—";
+const pct = (n) => isNum(n) ? `${n>0?"+":""}${n.toFixed(2)}%` : "—";
 
-function buildCombinedStreamUrl(symbols) {
-  const streams = symbols.map((s) => `${s.toLowerCase()}@miniTicker`).join("/");
+const styles = {
+  rowBtn: {
+    display:"grid",
+    gridTemplateColumns:"3fr 2fr 2fr 2fr 2fr 1fr",
+    width:"100%",
+    alignItems:"center",
+    padding:"10px 12px",
+    background:"#0f1320",
+    color:"#eef3ff",
+    borderTop:"1px solid #141a2a",
+    textAlign:"left"
+  },
+  cellRight: { textAlign:"right" },
+  cellCenter: { textAlign:"center" },
+  pillLow: { display:"inline-block", padding:"4px 8px", borderRadius:999, border:"1px solid #1f8a5c", color:"#22d39a", background:"rgba(34,211,154,0.08)", fontSize:12, fontWeight:800 },
+  pillMed: { display:"inline-block", padding:"4px 8px", borderRadius:999, border:"1px solid #b8860b", color:"#ffcc66", background:"rgba(255,204,102,0.08)", fontSize:12, fontWeight:800 },
+  pillHigh:{ display:"inline-block", padding:"4px 8px", borderRadius:999, border:"1px solid #a33a3a", color:"#ff7b7b", background:"rgba(255,107,107,0.08)", fontSize:12, fontWeight:800 },
+  stale: { display:"inline-flex", gap:6, alignItems:"center", color:"#ff7b7b", fontSize:11, marginLeft:8 }
+};
+
+function buildUrl(symbols){
+  const streams = symbols.map(s=>`${s.toLowerCase()}@miniTicker`).join("/");
   return `${WS_BASE}?streams=${streams}`;
 }
 
-function classifyRisk(high, low, open) {
-  if (!isNum(open) || open <= 0 || !isNum(high) || !isNum(low)) return "LOW";
-  const rangePct = Math.abs(high - low) / open;
-  if (rangePct >= 0.07) return "HIGH";
-  if (rangePct >= 0.03) return "MEDIUM";
+function classifyRisk(h,l,o){
+  if(!isNum(o)||!isNum(h)||!isNum(l)||o<=0) return "LOW";
+  const r = Math.abs(h-l)/o;
+  if (r>=0.07) return "HIGH";
+  if (r>=0.03) return "MEDIUM";
   return "LOW";
 }
-// ---------------------------------
 
-function useLocalStorage(key) {
-  const isClient = typeof window !== "undefined";
-  const [bump, setBump] = useState(0);
-  const get = useCallback(() => {
-    if (!isClient) return [];
-    try { return JSON.parse(window.localStorage.getItem(key) || "[]"); } catch { return []; }
-  }, [key, isClient]);
-  const set = useCallback((val) => {
-    if (!isClient) return;
-    window.localStorage.setItem(key, JSON.stringify(val));
-    setBump((x) => x + 1);
-  }, [key, isClient]);
-  return { get, set, bump, isClient };
+function FavStar({active, onClick}){
+  return (
+    <span onClick={onClick} title={active?"Favoriden çıkar":"Favoriye ekle"}
+      style={{cursor:"pointer", color: active? "#ffd54a":"#6e7890"}}>
+      ★
+    </span>
+  );
 }
 
 export default function RealtimePanel({
-  symbols = DEFAULT_SYMBOLS,
-  staleAfterMs = 5000,
-  longShortFetchEveryMs = 30000,
-  onOpenDetails,
-}) {
+  symbols=DEFAULT_SYMBOLS,
+  staleAfterMs=5000,
+  longShortFetchEveryMs=30000,
+  onOpenDetails
+}){
   const [tickers, setTickers] = useState({});
   const [status, setStatus] = useState("CONNECTING");
   const [error, setError] = useState(null);
 
   const wsRef = useRef(null);
-  const lastMessageTsRef = useRef(0);
-  const reconnectAttemptRef = useRef(0);
-  const mountedRef = useRef(true);
+  const lastMsgTs = useRef(0);
+  const reconnectAttempt = useRef(0);
+  const mounted = useRef(true);
 
-  const { get: getFavs, set: setFavs, bump: favsBump, isClient } = useLocalStorage("kg-favorites");
-  const favorites = useMemo(() => (isClient ? getFavs() : []), [getFavs, favsBump, isClient]);
+  // favoriler (localStorage guard)
+  const [favorites, setFavorites] = useState([]);
+  useEffect(()=>{
+    if (typeof window==="undefined") return;
+    try { setFavorites(JSON.parse(localStorage.getItem("kg-favs")||"[]")); } catch {}
+  },[]);
+  const toggleFav = (sym)=>{
+    if (typeof window==="undefined") return;
+    const set = new Set((favorites||[]).map(x=>String(x).toUpperCase()));
+    const u = sym.toUpperCase();
+    set.has(u) ? set.delete(u) : set.add(u);
+    const arr = Array.from(set);
+    setFavorites(arr);
+    try { localStorage.setItem("kg-favs", JSON.stringify(arr)); } catch {}
+  };
 
-  const combinedUrl = useMemo(() => buildCombinedStreamUrl(symbols), [symbols]);
+  const url = useMemo(()=>buildUrl(symbols), [symbols]);
 
-  const connect = useCallback(() => {
-    if (typeof window === "undefined") return;
-    try {
-      setStatus("CONNECTING");
-      setError(null);
-      const ws = new WebSocket(combinedUrl);
+  const connect = useCallback(()=>{
+    if (typeof window==="undefined") return;
+    try{
+      setStatus("CONNECTING"); setError(null);
+      const ws = new WebSocket(url);
       wsRef.current = ws;
 
-      ws.onopen = () => {
-        if (!mountedRef.current) return;
-        setStatus("OPEN");
-        reconnectAttemptRef.current = 0;
-      };
+      ws.onopen = ()=>{ if(!mounted.current) return; setStatus("OPEN"); reconnectAttempt.current = 0; };
 
-      ws.onmessage = (ev) => {
-        lastMessageTsRef.current = Date.now();
-        try {
-          const packet = JSON.parse(ev.data);
-          const d = packet?.data;
-          if (!d || typeof d.s !== "string") return;
-
-          const symbol = d.s.toUpperCase();
+      ws.onmessage = (ev)=>{
+        lastMsgTs.current = Date.now();
+        try{
+          const pkt = JSON.parse(ev.data);
+          const d = pkt?.data;
+          if(!d || typeof d.s!=="string") return;
+          const s = d.s.toUpperCase();
           const price = Number(d.c);
           const open = Number(d.o);
           const high = Number(d.h);
-          const low = Number(d.l);
+          const low  = Number(d.l);
           const volume = Number(d.v);
           const quoteVolume = Number(d.q);
 
-          // en azından price sayı değilse güncelleme yapma
           if (!isNum(price)) return;
 
-          const changePct = isNum(open) && open > 0 ? ((price - open) / open) * 100 : NaN;
-          const riskTier = classifyRisk(high, low, open);
+          const changePct = (isNum(open)&&open>0) ? ((price-open)/open)*100 : NaN;
+          const riskTier = classifyRisk(high,low,open);
 
-          setTickers((prev) => ({
+          setTickers(prev=>({
             ...prev,
-            [symbol]: {
-              symbol,
+            [s]: {
+              symbol:s,
               price,
-              open: isNum(open) ? open : NaN,
-              high: isNum(high) ? high : NaN,
-              low: isNum(low) ? low : NaN,
-              volume: isNum(volume) ? volume : NaN,
-              quoteVolume: isNum(quoteVolume) ? quoteVolume : NaN,
-              changePct: isNum(changePct) ? changePct : NaN,
-              lastUpdate: Date.now(),
+              open: isNum(open)? open: NaN,
+              high: isNum(high)? high: NaN,
+              low:  isNum(low) ? low : NaN,
+              volume: isNum(volume)? volume: NaN,
+              quoteVolume: isNum(quoteVolume)? quoteVolume: NaN,
+              changePct: isNum(changePct)? changePct: NaN,
               riskTier,
-              longShortRatio: prev[symbol]?.longShortRatio,
-            },
+              longShortRatio: prev[s]?.longShortRatio,
+              lastUpdate: Date.now()
+            }
           }));
-        } catch {
-          // JSON hatası -> yoksay
-        }
+        }catch{}
       };
 
-      ws.onerror = () => {
-        if (!mountedRef.current) return;
-        setStatus("ERROR");
-        setError("WebSocket hatası");
-      };
-
-      ws.onclose = () => {
-        if (!mountedRef.current) return;
+      ws.onerror = ()=>{ if(!mounted.current) return; setStatus("ERROR"); setError("WebSocket hatası"); };
+      ws.onclose  = ()=>{
+        if(!mounted.current) return;
         setStatus("CLOSED");
-        const attempt = (reconnectAttemptRef.current = reconnectAttemptRef.current + 1);
-        const base = Math.min(30000, 1000 * Math.pow(2, attempt));
-        const jitter = Math.floor(Math.random() * 1000);
-        setTimeout(() => mountedRef.current && connect(), base + jitter);
+        const n = ++reconnectAttempt.current;
+        const base = Math.min(30000, 1000*Math.pow(2,n));
+        const jitter = Math.floor(Math.random()*800);
+        setTimeout(()=> mounted.current && connect(), base + jitter);
       };
-    } catch (e) {
-      setStatus("ERROR");
-      setError(e?.message || "Bilinmeyen hata");
+    }catch(e){
+      setStatus("ERROR"); setError(e?.message||"Bilinmeyen hata");
     }
-  }, [combinedUrl]);
+  },[url]);
 
-  useEffect(() => {
-    mountedRef.current = true;
+  useEffect(()=>{
+    mounted.current = true;
     connect();
-    return () => {
-      mountedRef.current = false;
-      try { wsRef.current?.close(); } catch {}
-    };
-  }, [connect]);
+    return ()=>{ mounted.current=false; try{ wsRef.current?.close(); }catch{} };
+  },[connect]);
 
-  // stale olursa yeniden bağlan
-  useEffect(() => {
-    const iv = setInterval(() => {
-      if (status === "OPEN" && Date.now() - lastMessageTsRef.current > Math.max(staleAfterMs * 2, 10000)) {
-        try { wsRef.current?.close(); } catch {}
+  // stale olduğunda yeniden bağlan
+  useEffect(()=>{
+    const iv = setInterval(()=>{
+      if (status==="OPEN" && Date.now()-lastMsgTs.current > Math.max(staleAfterMs*2, 10000)){
+        try{ wsRef.current?.close(); }catch{}
       }
-    }, 2000);
-    return () => clearInterval(iv);
-  }, [status, staleAfterMs]);
+    },2000);
+    return ()=> clearInterval(iv);
+  },[status, staleAfterMs]);
 
-  // Long/Short oranı
-  useEffect(() => {
-    let abort = false;
-    async function fetchLS(symbol) {
-      try {
-        const url = `${REST_BASE}/futures/data/globalLongShortAccountRatio?symbol=${symbol}&period=5m&limit=1`;
-        const res = await fetch(url);
-        if (!res.ok) return;
-        const arr = await res.json();
+  // Long/Short ratio
+  useEffect(()=>{
+    let stop=false;
+    async function pull(sym){
+      try{
+        const u = `${REST_BASE}/futures/data/globalLongShortAccountRatio?symbol=${sym}&period=5m&limit=1`;
+        const r = await fetch(u);
+        if(!r.ok) return;
+        const arr = await r.json();
         const last = arr?.[0];
         const ratio = last ? Number(last.longShortRatio) : NaN;
-        if (!isNum(ratio) || abort) return;
-        setTickers((prev) => ({
-          ...prev,
-          [symbol]: { ...prev[symbol], longShortRatio: ratio },
-        }));
-      } catch { /* yoksay */ }
+        if (stop || !isNum(ratio)) return;
+        setTickers(prev=>({...prev, [sym]: {...prev[sym], longShortRatio: ratio }}));
+      }catch{}
     }
-    if (typeof window === "undefined") return;
-    symbols.forEach((s, i) => setTimeout(() => fetchLS(s.toUpperCase()), i * 350));
-    const iv = setInterval(() => {
-      symbols.forEach((s, i) => setTimeout(() => fetchLS(s.toUpperCase()), i * 350));
-    }, longShortFetchEveryMs);
-    return () => { abort = true; clearInterval(iv); };
-  }, [symbols, longShortFetchEveryMs]);
+    if (typeof window==="undefined") return;
+    symbols.forEach((s,i)=> setTimeout(()=>pull(s.toUpperCase()), i*300));
+    const iv = setInterval(()=> symbols.forEach((s,i)=> setTimeout(()=>pull(s.toUpperCase()), i*300)), longShortFetchEveryMs);
+    return ()=>{ stop=true; clearInterval(iv); };
+  },[symbols, longShortFetchEveryMs]);
 
-  const favSet = useMemo(() => new Set((favorites || []).map((x) => String(x).toUpperCase())), [favorites]);
-
-  const list = useMemo(() => {
+  // sıralama: favori ↑, ardından mutlak % değişim
+  const favSet = useMemo(()=> new Set((favorites||[]).map(x=>String(x).toUpperCase())),[favorites]);
+  const list = useMemo(()=>{
     const arr = Object.values(tickers);
-    return arr.sort((a, b) => {
-      const aFav = favSet.has(a.symbol) ? 1 : 0;
-      const bFav = favSet.has(b.symbol) ? 1 : 0;
-      if (aFav !== bFav) return bFav - aFav;
-      const aAbs = isNum(a.changePct) ? Math.abs(a.changePct) : -1;
-      const bAbs = isNum(b.changePct) ? Math.abs(b.changePct) : -1;
-      return bAbs - aAbs;
+    return arr.sort((a,b)=>{
+      const af = favSet.has(a.symbol)?1:0, bf = favSet.has(b.symbol)?1:0;
+      if (af!==bf) return bf-af;
+      const aa = isNum(a.changePct)? Math.abs(a.changePct) : -1;
+      const bb = isNum(b.changePct)? Math.abs(b.changePct) : -1;
+      return bb-aa;
     });
-  }, [tickers, favSet]);
+  },[tickers, favSet]);
 
-  const toggleFavorite = (symbol) => {
-    const current = Array.isArray(favorites) ? favorites : [];
-    const st = new Set(current.map((x) => String(x).toUpperCase()));
-    const up = symbol.toUpperCase();
-    if (st.has(up)) st.delete(up); else st.add(up);
-    setFavs(Array.from(st));
-  };
-
-  const isStale = (t) => Date.now() - t.lastUpdate > staleAfterMs;
+  const isStale = (t)=> Date.now()-t.lastUpdate > staleAfterMs;
 
   return (
-    <div className="w-full max-w-6xl mx-auto p-4">
-      <Header status={status} error={error} />
-
-      <div className="mt-4 overflow-hidden rounded-2xl shadow border border-zinc-800" style={{background:"#0b0b0f"}}>
-        <div className="grid grid-cols-12 text-xs sm:text-sm md:text-base px-4 py-3 font-medium text-zinc-300" style={{background:"#14141a"}}>
-          <div className="col-span-3">Sembol</div>
-          <div className="col-span-2 text-right">Fiyat</div>
-          <div className="col-span-2 text-right">24s Değişim</div>
-          <div className="col-span-2 text-center">Risk</div>
-          <div className="col-span-2 text-center">Long/Short</div>
-          <div className="col-span-1 text-center">⭐</div>
+    <div>
+      {/* status satırı */}
+      <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", padding:"8px 12px", background:"#0f1320", color:"#aab3c5"}}>
+        <div style={{display:"flex", alignItems:"center", gap:8}}>
+          <span style={{
+            display:"inline-block", width:8, height:8, borderRadius:999,
+            background: status==="OPEN" ? "#22d39a" : status==="CONNECTING" ? "#ffcc66" : status==="ERROR" ? "#ff6b6b" : "#6e7890"
+          }}/>
+          <span style={{fontWeight:800}}>
+            WebSocket: {status==="OPEN"?"Canlı":status==="CONNECTING"?"Bağlanıyor":status==="ERROR"?"Hata":"Kapalı"}
+          </span>
+          {error && <span style={{color:"#ff7b7b"}}>• {error}</span>}
         </div>
+        <div style={{fontSize:12, opacity:.8}}>Kaynak: Binance Futures (miniTicker)</div>
+      </div>
 
-        <div className="divide-y divide-zinc-900/50">
-          {list.map((t) => {
-            const cp = isNum(t.changePct) ? t.changePct : 0;
-            return (
-              <button
-                key={t.symbol}
-                onClick={() => onOpenDetails && onOpenDetails(t.symbol)}
-                className="grid grid-cols-12 w-full items-center px-4 py-3 hover:bg-zinc-900/50 transition text-left"
-                style={{color:"#e5e7eb"}}
-              >
-                <div className="col-span-3 flex items-center gap-2">
-                  <span className="font-semibold">{t.symbol}</span>
-                  {isStale(t) && <StaleBadge />}
-                </div>
-
-                <div className="col-span-2 text-right tabular-nums">
-                  {showNum(t.price, 6)}
-                </div>
-
-                <div className="col-span-2 text-right">
-                  <span className={cp > 0 ? "text-emerald-400" : cp < 0 ? "text-red-400" : "text-zinc-300"}>
-                    {formatPct(t.changePct)}
+      {/* satırlar */}
+      <div>
+        {list.map(t=>{
+          const cp = isNum(t.changePct) ? t.changePct : 0;
+          const risk = t.riskTier||"LOW";
+          const pill = risk==="HIGH" ? styles.pillHigh : risk==="MEDIUM" ? styles.pillMed : styles.pillLow;
+          return (
+            <button key={t.symbol} onClick={()=> onOpenDetails && onOpenDetails(t.symbol)}
+              style={{...styles.rowBtn, cursor:"pointer"}}
+              onMouseEnter={e=> e.currentTarget.style.background="#12172a"}
+              onMouseLeave={e=> e.currentTarget.style.background="#0f1320"}
+            >
+              <div style={{display:"flex", alignItems:"center", gap:8}}>
+                <span style={{fontWeight:900, letterSpacing:.3}}>{t.symbol}</span>
+                {isStale(t) && (
+                  <span style={styles.stale}>
+                    <span style={{width:6, height:6, borderRadius:999, background:"#ff5d5d", display:"inline-block"}}/>
+                    Eski veri
                   </span>
-                </div>
+                )}
+              </div>
 
-                <div className="col-span-2 text-center">
-                  <RiskPill tier={t.riskTier} />
-                </div>
+              <div style={{...styles.cellRight, fontVariantNumeric:"tabular-nums"}}>{showNum(t.price, 6)}</div>
 
-                <div className="col-span-2 text-center">
-                  {isNum(t.longShortRatio) ? (
-                    <span className={t.longShortRatio >= 1 ? "text-emerald-400" : "text-red-400"}>
-                      {t.longShortRatio.toFixed(2)}x
-                    </span>
-                  ) : (
-                    <span className="text-zinc-500">—</span>
-                  )}
-                </div>
+              <div style={styles.cellRight}>
+                <span style={{fontWeight:900, color: cp>0 ? "#22d39a" : cp<0 ? "#ff7b7b" : "#c9d3e7"}}>
+                  {pct(t.changePct)}
+                </span>
+              </div>
 
-                <div className="col-span-1 flex justify-center">
-                  <FavStar
-                    active={Array.isArray(favorites) && favorites.map((x)=>String(x).toUpperCase()).includes(t.symbol)}
-                    onClick={(e) => { e.stopPropagation(); toggleFavorite(t.symbol); }}
-                  />
-                </div>
-              </button>
-            );
-          })}
-        </div>
+              <div style={styles.cellCenter}>
+                <span style={pill}>{risk==="HIGH"?"Yüksek":risk==="MEDIUM"?"Orta":"Düşük"}</span>
+              </div>
+
+              <div style={styles.cellCenter}>
+                {isNum(t.longShortRatio)
+                  ? <span style={{fontWeight:900, color: t.longShortRatio>=1 ? "#22d39a" : "#ff7b7b"}}>{t.longShortRatio.toFixed(2)}x</span>
+                  : <span style={{opacity:.6}}>—</span>}
+              </div>
+
+              <div style={{...styles.cellCenter}}>
+                <FavStar active={favSet.has(t.symbol)} onClick={(e)=>{ e.stopPropagation(); toggleFav(t.symbol); }}/>
+              </div>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-function Header({ status, error }) {
-  const color =
-    status === "OPEN" ? "text-emerald-400" :
-    status === "CONNECTING" ? "text-amber-400" :
-    status === "ERROR" ? "text-red-400" : "text-zinc-300";
-  const label =
-    status === "OPEN" ? "Canlı" :
-    status === "CONNECTING" ? "Bağlanıyor" :
-    status === "ERROR" ? "Hata" : "Kapalı";
-
-  return (
-    <div className="flex items-center justify-between">
-      <div className="flex items-center gap-2">
-        <span className={`inline-block w-2 h-2 rounded-full ${
-          status === "OPEN" ? "bg-emerald-400" :
-          status === "CONNECTING" ? "bg-amber-400" :
-          status === "ERROR" ? "bg-red-400" : "bg-zinc-500"
-        }`} />
-        <span className={`text-sm ${color}`}>WebSocket: {label}</span>
-        {error && <span className="text-sm text-red-400">• {error}</span>}
-      </div>
-      <div className="text-xs text-zinc-500">Kaynak: Binance Futures (miniTicker)</div>
-    </div>
-  );
-}
-
-function RiskPill({ tier }) {
-  const map = {
-    LOW: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
-    MEDIUM: "bg-amber-500/10 text-amber-400 border-amber-500/30",
-    HIGH: "bg-red-500/10 text-red-400 border-red-500/30",
-  };
-  const label = tier === "LOW" ? "Düşük" : tier === "MEDIUM" ? "Orta" : "Yüksek";
-  return <span className={`px-2 py-1 rounded-full border text-xs ${map[tier]}`}>{label}</span>;
-}
-
-function StaleBadge() {
-  return (
-    <span className="inline-flex items-center gap-1 text-red-400 text-[10px]">
-      <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500" />
-      Eski veri
-    </span>
-  );
-}
-
-function FavStar({ active, onClick }) {
-  return (
-    <span
-      onClick={onClick}
-      className={`inline-block w-5 h-5 cursor-pointer select-none ${active ? "text-yellow-400" : "text-zinc-500"}`}
-      title={active ? "Favorilerden çıkar" : "Favorilere ekle"}
-    >
-      <svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-        <path d="M12 .587l3.668 7.431 8.2 1.192-5.934 5.787 1.401 8.166L12 18.896l-7.335 3.867 1.401-8.166L.132 9.21l8.2-1.192L12 .587z" />
-      </svg>
-    </span>
-  );
-}
 
 
 
