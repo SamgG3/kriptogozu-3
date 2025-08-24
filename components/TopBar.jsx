@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 
-/** Yardımcılar */
 function getCookie(name) {
   if (typeof document === "undefined") return null;
   const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
@@ -14,30 +13,16 @@ function truthy(v) {
   const s = String(v).trim().toLowerCase();
   return s === "1" || s === "true" || s === "yes" || s === "ok";
 }
-
 function readAuth() {
   if (typeof window === "undefined") return { isAuthed: false, user: null };
-
-  // 1) localStorage
   let authLS = null, userLS = null;
-  try {
-    authLS = localStorage.getItem("kg-auth");
-    userLS = localStorage.getItem("kg-user");
-  } catch {}
-
-  // 2) cookie fallback
+  try { authLS = localStorage.getItem("kg-auth"); userLS = localStorage.getItem("kg-user"); } catch {}
   const authCK = getCookie("kg-auth");
-  const userCK = getCookie("kg-user"); // URL-encoded JSON olabilir
-
+  const userCK = getCookie("kg-user");
   const isAuthed = truthy(authLS) || truthy(authCK);
-
-  let user = null;
-  const raw = userLS || userCK;
-  if (raw) {
-    try { user = typeof raw === "string" ? JSON.parse(raw) : raw; } catch {}
-  }
+  let user = null; const raw = userLS || userCK;
+  if (raw) { try { user = typeof raw === "string" ? JSON.parse(raw) : raw; } catch {} }
   if (!user || typeof user !== "object") user = { name: "Kullanıcı", avatar: "" };
-
   return { isAuthed, user };
 }
 
@@ -45,26 +30,15 @@ export default function TopBar() {
   const [{ isAuthed, user }, setState] = useState(() => readAuth());
   const [ready, setReady] = useState(false);
 
-  // İlk yükleme + görünürlük değişince tekrar oku
   useEffect(() => {
     setState(readAuth());
     setReady(true);
-
-    const onStorage = (e) => {
-      if (!e) return;
-      if (["kg-auth", "kg-user"].includes(e.key)) {
-        setState(readAuth());
-      }
-    };
+    const onStorage = (e) => { if (["kg-auth","kg-user"].includes(e.key)) setState(readAuth()); };
     const onVisible = () => setState(readAuth());
-
+    const onAuthChanged = () => setState(readAuth());
     window.addEventListener("storage", onStorage);
     document.addEventListener("visibilitychange", onVisible);
-
-    // Custom event desteği (login sayfasından dispatch edebilirsin)
-    const onAuthChanged = () => setState(readAuth());
     window.addEventListener("kg-auth-changed", onAuthChanged);
-
     return () => {
       window.removeEventListener("storage", onStorage);
       document.removeEventListener("visibilitychange", onVisible);
@@ -124,7 +98,6 @@ export default function TopBar() {
             }
           </div>
           <span style={{color:"#cfe6ff", fontWeight:800}}>{user?.name || "Kullanıcı"}</span>
-
           <button
             onClick={logout}
             style={{
@@ -139,3 +112,4 @@ export default function TopBar() {
     </header>
   );
 }
+
