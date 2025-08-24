@@ -70,6 +70,7 @@ export default function TopBar() {
         </Link>
         <nav style={{display:"flex", gap:12, marginLeft:8}}>
           <Link href="/" style={{color:"#9fb3d9"}}>Ana Sayfa</Link>
+          <Link href="/whales" style={{color:"#9fb3d9"}}>Balina</Link>
           <Link href="/admin" style={{color:"#9fb3d9"}}>Panel</Link>
         </nav>
       </div>
@@ -98,6 +99,7 @@ export default function TopBar() {
             }
           </div>
           <span style={{color:"#cfe6ff", fontWeight:800}}>{user?.name || "Kullanıcı"}</span>
+
           <button
             onClick={logout}
             style={{
@@ -112,4 +114,3 @@ export default function TopBar() {
     </header>
   );
 }
-
