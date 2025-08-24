@@ -1,6 +1,4 @@
-// Global layout + navbar
-import "@/styles/globals.css";
-
+// pages/_app.js
 export default function App({ Component, pageProps }) {
   return (
     <div style={{minHeight:"100vh", background:"#0f1115", color:"#e6e6e6", fontFamily:"system-ui"}}>
@@ -16,4 +14,5 @@ export default function App({ Component, pageProps }) {
     </div>
   );
 }
+
 
