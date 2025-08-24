@@ -2,13 +2,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * KriptoGözü – Realtime WebSocket Layer (Next.js Pages Router + React)
- * - Binance Futures miniTicker stream ile canlı fiyat
- * - Veri doğrulama (NaN / open<=0 atlanır)
- * - Stale-data uyarısı (gecikirse kırmızı rozet)
- * - Otomatik yeniden bağlanma (exponential backoff + jitter)
- * - Periyodik Long/Short oranı (REST: globalLongShortAccountRatio)
- * - SSR güvenli localStorage erişimi
+ * KriptoGözü – Realtime WebSocket Layer (Client-only)
+ * SSR guard'lı WebSocket + localStorage
  */
 
 const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"];
@@ -33,32 +28,20 @@ function formatPct(n) {
   return `${sign}${n.toFixed(2)}%`;
 }
 
-// ---- SSR Güvenli localStorage Hook ----
 function useLocalStorage(key) {
   const isClient = typeof window !== "undefined";
   const [bump, setBump] = useState(0);
-
   const get = useCallback(() => {
     if (!isClient) return [];
-    try {
-      return JSON.parse(window.localStorage.getItem(key) || "[]");
-    } catch {
-      return [];
-    }
+    try { return JSON.parse(window.localStorage.getItem(key) || "[]"); } catch { return []; }
   }, [key, isClient]);
-
-  const set = useCallback(
-    (val) => {
-      if (!isClient) return;
-      window.localStorage.setItem(key, JSON.stringify(val));
-      setBump((x) => x + 1);
-    },
-    [key, isClient]
-  );
-
+  const set = useCallback((val) => {
+    if (!isClient) return;
+    window.localStorage.setItem(key, JSON.stringify(val));
+    setBump((x) => x + 1);
+  }, [key, isClient]);
   return { get, set, bump, isClient };
 }
-// ---------------------------------------
 
 export default function RealtimePanel({
   symbols = DEFAULT_SYMBOLS,
@@ -67,7 +50,7 @@ export default function RealtimePanel({
   onOpenDetails,
 }) {
   const [tickers, setTickers] = useState({});
-  const [status, setStatus] = useState("CONNECTING"); // CONNECTING | OPEN | CLOSED | ERROR
+  const [status, setStatus] = useState("CONNECTING");
   const [error, setError] = useState(null);
 
   const wsRef = useRef(null);
@@ -75,19 +58,13 @@ export default function RealtimePanel({
   const reconnectAttemptRef = useRef(0);
   const mountedRef = useRef(true);
 
-  const { get: getFavs, set: setFavs, bump: favsBump, isClient } =
-    useLocalStorage("kg-favorites");
-  const favorites = useMemo(
-    () => (isClient ? getFavs() : []),
-    [getFavs, favsBump, isClient]
-  );
+  const { get: getFavs, set: setFavs, bump: favsBump, isClient } = useLocalStorage("kg-favorites");
+  const favorites = useMemo(() => (isClient ? getFavs() : []), [getFavs, favsBump, isClient]);
 
   const combinedUrl = useMemo(() => buildCombinedStreamUrl(symbols), [symbols]);
 
-  // WebSocket bağlan
   const connect = useCallback(() => {
     if (typeof window === "undefined") return;
-
     try {
       setStatus("CONNECTING");
       setError(null);
@@ -136,9 +113,7 @@ export default function RealtimePanel({
               longShortRatio: prev[symbol]?.longShortRatio,
             },
           }));
-        } catch {
-          // JSON hatası olursa sessiz geç
-        }
+        } catch { /* ignore */ }
       };
 
       ws.onerror = () => {
@@ -150,8 +125,7 @@ export default function RealtimePanel({
       ws.onclose = () => {
         if (!mountedRef.current) return;
         setStatus("CLOSED");
-        const attempt = (reconnectAttemptRef.current =
-          reconnectAttemptRef.current + 1);
+        const attempt = (reconnectAttemptRef.current = reconnectAttemptRef.current + 1);
         const base = Math.min(30000, 1000 * Math.pow(2, attempt));
         const jitter = Math.floor(Math.random() * 1000);
         setTimeout(() => mountedRef.current && connect(), base + jitter);
@@ -167,31 +141,21 @@ export default function RealtimePanel({
     connect();
     return () => {
       mountedRef.current = false;
-      try {
-        wsRef.current?.close();
-      } catch {}
+      try { wsRef.current?.close(); } catch {}
     };
   }, [connect]);
 
-  // Heartbeat
   useEffect(() => {
     const iv = setInterval(() => {
-      if (
-        status === "OPEN" &&
-        Date.now() - lastMessageTsRef.current > Math.max(staleAfterMs * 2, 10000)
-      ) {
-        try {
-          wsRef.current?.close();
-        } catch {}
+      if (status === "OPEN" && Date.now() - lastMessageTsRef.current > Math.max(staleAfterMs * 2, 10000)) {
+        try { wsRef.current?.close(); } catch {}
       }
     }, 2000);
     return () => clearInterval(iv);
   }, [status, staleAfterMs]);
 
-  // Long/Short oranlarını REST ile çek
   useEffect(() => {
     let abort = false;
-
     async function fetchLS(symbol) {
       try {
         const url = `${REST_BASE}/futures/data/globalLongShortAccountRatio?symbol=${symbol}&period=5m&limit=1`;
@@ -203,37 +167,19 @@ export default function RealtimePanel({
         if (!isFinite(ratio) || abort) return;
         setTickers((prev) => ({
           ...prev,
-          [symbol]: {
-            ...prev[symbol],
-            longShortRatio: ratio,
-          },
+          [symbol]: { ...prev[symbol], longShortRatio: ratio },
         }));
-      } catch {
-        // sessiz geç
-      }
+      } catch { /* ignore */ }
     }
-
     if (typeof window === "undefined") return;
-
-    symbols.forEach((s, i) =>
-      setTimeout(() => fetchLS(s.toUpperCase()), i * 350)
-    );
+    symbols.forEach((s, i) => setTimeout(() => fetchLS(s.toUpperCase()), i * 350));
     const iv = setInterval(() => {
-      symbols.forEach((s, i) =>
-        setTimeout(() => fetchLS(s.toUpperCase()), i * 350)
-      );
+      symbols.forEach((s, i) => setTimeout(() => fetchLS(s.toUpperCase()), i * 350));
     }, longShortFetchEveryMs);
-
-    return () => {
-      abort = true;
-      clearInterval(iv);
-    };
+    return () => { abort = true; clearInterval(iv); };
   }, [symbols, longShortFetchEveryMs]);
 
-  const favSet = useMemo(
-    () => new Set((favorites || []).map((x) => String(x).toUpperCase())),
-    [favorites]
-  );
+  const favSet = useMemo(() => new Set((favorites || []).map((x) => String(x).toUpperCase())), [favorites]);
 
   const list = useMemo(() => {
     const arr = Object.values(tickers);
@@ -249,8 +195,7 @@ export default function RealtimePanel({
     const current = Array.isArray(favorites) ? favorites : [];
     const st = new Set(current.map((x) => String(x).toUpperCase()));
     const up = symbol.toUpperCase();
-    if (st.has(up)) st.delete(up);
-    else st.add(up);
+    if (st.has(up)) st.delete(up); else st.add(up);
     setFavs(Array.from(st));
   };
 
@@ -260,14 +205,8 @@ export default function RealtimePanel({
     <div className="w-full max-w-6xl mx-auto p-4">
       <Header status={status} error={error} />
 
-      <div
-        className="mt-4 overflow-hidden rounded-2xl shadow border border-zinc-800"
-        style={{ background: "#0b0b0f" }}
-      >
-        <div
-          className="grid grid-cols-12 text-xs sm:text-sm md:text-base px-4 py-3 font-medium text-zinc-300"
-          style={{ background: "#14141a" }}
-        >
+      <div className="mt-4 overflow-hidden rounded-2xl shadow border border-zinc-800" style={{background:"#0b0b0f"}}>
+        <div className="grid grid-cols-12 text-xs sm:text-sm md:text-base px-4 py-3 font-medium text-zinc-300" style={{background:"#14141a"}}>
           <div className="col-span-3">Sembol</div>
           <div className="col-span-2 text-right">Fiyat</div>
           <div className="col-span-2 text-right">24s Değişim</div>
@@ -282,7 +221,7 @@ export default function RealtimePanel({
               key={t.symbol}
               onClick={() => onOpenDetails && onOpenDetails(t.symbol)}
               className="grid grid-cols-12 w-full items-center px-4 py-3 hover:bg-zinc-900/50 transition text-left"
-              style={{ color: "#e5e7eb" }}
+              style={{color:"#e5e7eb"}}
             >
               <div className="col-span-3 flex items-center gap-2">
                 <span className="font-semibold">{t.symbol}</span>
@@ -290,21 +229,11 @@ export default function RealtimePanel({
               </div>
 
               <div className="col-span-2 text-right tabular-nums">
-                {t.price.toLocaleString(undefined, {
-                  maximumFractionDigits: 6,
-                })}
+                {t.price.toLocaleString(undefined, { maximumFractionDigits: 6 })}
               </div>
 
               <div className="col-span-2 text-right">
-                <span
-                  className={
-                    t.changePct > 0
-                      ? "text-emerald-400"
-                      : t.changePct < 0
-                      ? "text-red-400"
-                      : "text-zinc-300"
-                  }
-                >
+                <span className={t.changePct > 0 ? "text-emerald-400" : t.changePct < 0 ? "text-red-400" : "text-zinc-300"}>
                   {formatPct(t.changePct)}
                 </span>
               </div>
@@ -315,15 +244,7 @@ export default function RealtimePanel({
 
               <div className="col-span-2 text-center">
                 {typeof t.longShortRatio === "number" ? (
-                  <span
-                    className={
-                      t.longShortRatio >= 1
-                        ? "text-emerald-400"
-                        : "text-red-400"
-                    }
-                  >
-                    {t.longShortRatio.toFixed(2)}x
-                  </span>
+                  <span className={t.longShortRatio >= 1 ? "text-emerald-400" : "text-red-400"}>{t.longShortRatio.toFixed(2)}x</span>
                 ) : (
                   <span className="text-zinc-500">—</span>
                 )}
@@ -331,16 +252,8 @@ export default function RealtimePanel({
 
               <div className="col-span-1 flex justify-center">
                 <FavStar
-                  active={
-                    Array.isArray(favorites) &&
-                    favorites
-                      .map((x) => String(x).toUpperCase())
-                      .includes(t.symbol)
-                  }
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleFavorite(t.symbol);
-                  }}
+                  active={Array.isArray(favorites) && favorites.map((x)=>String(x).toUpperCase()).includes(t.symbol)}
+                  onClick={(e) => { e.stopPropagation(); toggleFavorite(t.symbol); }}
                 />
               </div>
             </button>
@@ -353,42 +266,26 @@ export default function RealtimePanel({
 
 function Header({ status, error }) {
   const color =
-    status === "OPEN"
-      ? "text-emerald-400"
-      : status === "CONNECTING"
-      ? "text-amber-400"
-      : status === "ERROR"
-      ? "text-red-400"
-      : "text-zinc-300";
+    status === "OPEN" ? "text-emerald-400" :
+    status === "CONNECTING" ? "text-amber-400" :
+    status === "ERROR" ? "text-red-400" : "text-zinc-300";
   const label =
-    status === "OPEN"
-      ? "Canlı"
-      : status === "CONNECTING"
-      ? "Bağlanıyor"
-      : status === "ERROR"
-      ? "Hata"
-      : "Kapalı";
+    status === "OPEN" ? "Canlı" :
+    status === "CONNECTING" ? "Bağlanıyor" :
+    status === "ERROR" ? "Hata" : "Kapalı";
 
   return (
     <div className="flex items-center justify-between">
       <div className="flex items-center gap-2">
-        <span
-          className={`inline-block w-2 h-2 rounded-full ${
-            status === "OPEN"
-              ? "bg-emerald-400"
-              : status === "CONNECTING"
-              ? "bg-amber-400"
-              : status === "ERROR"
-              ? "bg-red-400"
-              : "bg-zinc-500"
-          }`}
-        />
+        <span className={`inline-block w-2 h-2 rounded-full ${
+          status === "OPEN" ? "bg-emerald-400" :
+          status === "CONNECTING" ? "bg-amber-400" :
+          status === "ERROR" ? "bg-red-400" : "bg-zinc-500"
+        }`} />
         <span className={`text-sm ${color}`}>WebSocket: {label}</span>
         {error && <span className="text-sm text-red-400">• {error}</span>}
       </div>
-      <div className="text-xs text-zinc-500">
-        Kaynak: Binance Futures (miniTicker)
-      </div>
+      <div className="text-xs text-zinc-500">Kaynak: Binance Futures (miniTicker)</div>
     </div>
   );
 }
@@ -399,13 +296,8 @@ function RiskPill({ tier }) {
     MEDIUM: "bg-amber-500/10 text-amber-400 border-amber-500/30",
     HIGH: "bg-red-500/10 text-red-400 border-red-500/30",
   };
-  const label =
-    tier === "LOW" ? "Düşük" : tier === "MEDIUM" ? "Orta" : "Yüksek";
-  return (
-    <span className={`px-2 py-1 rounded-full border text-xs ${map[tier]}`}>
-      {label}
-    </span>
-  );
+  const label = tier === "LOW" ? "Düşük" : tier === "MEDIUM" ? "Orta" : "Yüksek";
+  return <span className={`px-2 py-1 rounded-full border text-xs ${map[tier]}`}>{label}</span>;
 }
 
 function StaleBadge() {
@@ -421,21 +313,16 @@ function FavStar({ active, onClick }) {
   return (
     <span
       onClick={onClick}
-      className={`inline-block w-5 h-5 cursor-pointer select-none ${
-        active ? "text-yellow-400" : "text-zinc-500"
-      }`}
+      className={`inline-block w-5 h-5 cursor-pointer select-none ${active ? "text-yellow-400" : "text-zinc-500"}`}
       title={active ? "Favorilerden çıkar" : "Favorilere ekle"}
     >
-      <svg
-        viewBox="0 0 24 24"
-        fill="currentColor"
-        xmlns="http://www.w3.org/2000/svg"
-      >
+      <svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
         <path d="M12 .587l3.668 7.431 8.2 1.192-5.934 5.787 1.401 8.166L12 18.896l-7.335 3.867 1.401-8.166L.132 9.21l8.2-1.192L12 .587z" />
       </svg>
     </span>
   );
 }
+
 
 
 
