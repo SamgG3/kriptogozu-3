@@ -3,48 +3,85 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 
-/**
- * Basit auth mantığı:
- * - login'de localStorage.setItem("kg-auth", "1");
- * - login'de localStorage.setItem("kg-user", JSON.stringify({ name, avatar }))
- * - logout'ta bu anahtarları sil.
- *
- * Not: İleride gerçek backend/JWT kurarsak, burası /api/me'den user çekebilir.
- */
+/** Yardımcılar */
+function getCookie(name) {
+  if (typeof document === "undefined") return null;
+  const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return m ? decodeURIComponent(m[1]) : null;
+}
+function truthy(v) {
+  if (v == null) return false;
+  const s = String(v).trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "ok";
+}
+
+function readAuth() {
+  if (typeof window === "undefined") return { isAuthed: false, user: null };
+
+  // 1) localStorage
+  let authLS = null, userLS = null;
+  try {
+    authLS = localStorage.getItem("kg-auth");
+    userLS = localStorage.getItem("kg-user");
+  } catch {}
+
+  // 2) cookie fallback
+  const authCK = getCookie("kg-auth");
+  const userCK = getCookie("kg-user"); // URL-encoded JSON olabilir
+
+  const isAuthed = truthy(authLS) || truthy(authCK);
+
+  let user = null;
+  const raw = userLS || userCK;
+  if (raw) {
+    try { user = typeof raw === "string" ? JSON.parse(raw) : raw; } catch {}
+  }
+  if (!user || typeof user !== "object") user = { name: "Kullanıcı", avatar: "" };
+
+  return { isAuthed, user };
+}
 
 export default function TopBar() {
-  const [user, setUser] = useState(null);   // {name, avatar}
+  const [{ isAuthed, user }, setState] = useState(() => readAuth());
   const [ready, setReady] = useState(false);
 
+  // İlk yükleme + görünürlük değişince tekrar oku
   useEffect(() => {
-    try {
-      const ok = typeof window !== "undefined" && localStorage.getItem("kg-auth") === "1";
-      if (ok) {
-        const raw = localStorage.getItem("kg-user");
-        if (raw) {
-          const u = JSON.parse(raw);
-          if (u && typeof u === "object") setUser(u);
-        } else {
-          // isim/avatarsız default profil
-          setUser({ name: "Kullanıcı", avatar: "" });
-        }
-      }
-    } catch {}
+    setState(readAuth());
     setReady(true);
+
+    const onStorage = (e) => {
+      if (!e) return;
+      if (["kg-auth", "kg-user"].includes(e.key)) {
+        setState(readAuth());
+      }
+    };
+    const onVisible = () => setState(readAuth());
+
+    window.addEventListener("storage", onStorage);
+    document.addEventListener("visibilitychange", onVisible);
+
+    // Custom event desteği (login sayfasından dispatch edebilirsin)
+    const onAuthChanged = () => setState(readAuth());
+    window.addEventListener("kg-auth-changed", onAuthChanged);
+
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("kg-auth-changed", onAuthChanged);
+    };
   }, []);
 
   function logout() {
     try {
       localStorage.removeItem("kg-auth");
       localStorage.removeItem("kg-user");
-      // İstersen admin verilerini de temizleyebilirsin:
-      // localStorage.removeItem("kg-admin-symbols");
+      document.cookie = `kg-auth=; Max-Age=0; path=/`;
+      document.cookie = `kg-user=; Max-Age=0; path=/`;
     } catch {}
-    // Sayfayı yenile
     if (typeof window !== "undefined") window.location.href = "/";
   }
 
-  // SSR/CSR farkı titremesin diye hazır olana kadar boş döndür
   if (!ready) return null;
 
   return (
@@ -63,9 +100,7 @@ export default function TopBar() {
         </nav>
       </div>
 
-      {/* Sağ taraf: kullanıcı alanı */}
-      {!user ? (
-        // Giriş yoksa buton
+      {!isAuthed ? (
         <Link
           href="/login"
           style={{
@@ -76,7 +111,6 @@ export default function TopBar() {
           Giriş
         </Link>
       ) : (
-        // Giriş varsa profil menüsü
         <div style={{display:"flex", alignItems:"center", gap:10}}>
           <div style={{
             width:32, height:32, borderRadius:"50%", background:"#1e2a44",
