@@ -1,6 +1,6 @@
 // pages/_app.js
 import dynamic from "next/dynamic";
-import "../styles/globals.css"; // varsa; yoksa kaldırabilirsin
+import "../styles/globals.css"; // yoksa bu satırı silebilirsin
 
 const TopBar = dynamic(() => import("../components/TopBar"), { ssr: false });
 
