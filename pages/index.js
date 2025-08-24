@@ -1,5 +1,5 @@
 // pages/index.js
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import dynamic from "next/dynamic";
@@ -7,11 +7,11 @@ import dynamic from "next/dynamic";
 // RealtimePanel'i sadece client'ta çalıştır
 const RealtimePanel = dynamic(() => import("../components/RealtimePanel"), { ssr: false });
 
+// Yedek liste (admin/localStorage veya katalog gelene kadar)
+const FALLBACK = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
+
 const INDICATORS_API = (sym, interval) =>
   `/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`;
-
-const MAX_RESULTS = 12; // tabloda en fazla bu kadar sembol göster
-const FALLBACK = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
 
 const fmtPrice = (v)=>{
   if (v==null || isNaN(v)) return "—";
@@ -43,22 +43,26 @@ function biasFromLatest(L){
 export default function Home() {
   const router = useRouter();
 
-  // Tema & arama & veri durumları
+  // Tema & durumlar
   const [darkMode, setDarkMode] = useState(false);
-  const [query, setQuery] = useState("");
 
   // Kataloglar
-  const [allSymbols, setAllSymbols] = useState(FALLBACK);   // Binance USDT perpetual katalog
-  const [adminSymbols, setAdminSymbols] = useState(FALLBACK); // admin localStorage listesi (varsa)
+  const [allSymbols, setAllSymbols] = useState(FALLBACK);     // Binance USDT perpetual TRADING kataloğu
+  const [adminSymbols, setAdminSymbols] = useState(FALLBACK); // Admin/localStorage listesi
 
-  // Görünüm & veri
+  // Görünüm
   const [interval, setIntervalStr] = useState("1m");
   const [rows, setRows] = useState({});
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
   const timer = useRef(null);
 
-  // 1) Admin listesi (varsayılan görünüm olarak kullan)
+  // Arama kontrolü (butonlu)
+  const [query, setQuery] = useState("");          // inputtaki yazı
+  const [active, setActive] = useState(FALLBACK);  // şu an tabloda gösterilen semboller
+  const [searchInfo, setSearchInfo] = useState(""); // bilgi mesajı (bulunamadı vb.)
+
+  // 1) Admin listesini yükle (varsa onu varsayılan görünüm yap)
   useEffect(()=>{
     if (typeof window === "undefined") return;
     try{
@@ -66,13 +70,15 @@ export default function Home() {
       if (raw) {
         const arr = JSON.parse(raw);
         if (Array.isArray(arr) && arr.length) {
-          setAdminSymbols(Array.from(new Set(arr.map(s=>String(s).toUpperCase()))));
+          const uniq = Array.from(new Set(arr.map(s=>String(s).toUpperCase())));
+          setAdminSymbols(uniq);
+          setActive(uniq); // varsayılan görünüm admin listesi
         }
       }
     }catch{}
   },[]);
 
-  // 2) Binance USDT Futures katalog (TRADING) — client'ta çekiyoruz
+  // 2) Binance USDT Futures katalog (TRADING)
   useEffect(()=>{
     let stop=false;
     async function pull(){
@@ -89,20 +95,9 @@ export default function Home() {
     return ()=>{ stop=true; };
   },[]);
 
-  // 3) Arama filtresi (admin listesi + tüm katalog)
-  const filtered = useMemo(()=>{
-    const q = query.trim().toUpperCase();
-    const base = Array.from(new Set([...adminSymbols, ...allSymbols])); // admin öncelikli birleşik
-    if (!q) return base.slice(0, MAX_RESULTS);
-
-    // baştaki eşleşmelere öncelik ver, sonra içerenler
-    const starts = base.filter(s => s.startsWith(q));
-    const contains = base.filter(s => !s.startsWith(q) && s.includes(q));
-    return [...starts, ...contains].slice(0, MAX_RESULTS);
-  }, [query, adminSymbols, allSymbols]);
-
-  // 4) Veri çekme
-  async function load(list = filtered) {
+  // 3) Veri çekme
+  async function load(list = active) {
+    if (!list || !list.length) { setRows({}); return; }
     try {
       setLoading(true);
       const res = await Promise.all(
@@ -118,12 +113,37 @@ export default function Home() {
     } finally { setLoading(false); }
   }
 
-  useEffect(()=>{ load(filtered); }, [interval, filtered]);
+  useEffect(()=>{ load(active); }, [interval, active]);
   useEffect(()=>{
     if (timer.current) clearInterval(timer.current);
-    if (auto) timer.current = setInterval(()=>load(filtered), 10000);
+    if (auto) timer.current = setInterval(()=>load(active), 10000);
     return ()=> { if (timer.current) clearInterval(timer.current); };
-  }, [auto, interval, filtered]);
+  }, [auto, interval, active]);
+
+  // 4) ARA butonu — sadece yazılan coin görünsün (tam eşleşme)
+  function doSearch() {
+    const raw = (query||"").trim().toUpperCase();
+    if (!raw) {
+      setActive(adminSymbols);         // boşsa admin/default görünümüne dön
+      setSearchInfo("");
+      return;
+    }
+    // Kullanıcı "BTC" yazarsa "BTCUSDT" olarak tamamla
+    const wanted = raw.endsWith("USDT") ? raw : `${raw}USDT`;
+    const base = new Set([...(adminSymbols||[]), ...(allSymbols||[])]);
+    if (base.has(wanted)) {
+      setActive([wanted]);             // yalnızca tek sonuç göster
+      setSearchInfo("");
+    } else {
+      setActive([]);                   // tabloyu boşalt
+      setSearchInfo(`${wanted} bulunamadı (sadece USDT perpetual & TRADING semboller gösterilir).`);
+    }
+  }
+
+  // Enter'a basınca da ara
+  function onKey(e){
+    if (e.key === "Enter") doSearch();
+  }
 
   const rootStyle = {
     padding: "16px 18px",
@@ -140,20 +160,33 @@ export default function Home() {
         <h1 style={{margin:0, fontSize:22, fontWeight:900}}>KriptoGözü • Genel Panel</h1>
         <span style={{opacity:.85}}>(kartlarda AI özet • detay için tıkla)</span>
 
-        {/* Arama kutusu */}
+        {/* Arama kutusu + buton */}
         <input
           value={query}
           onChange={e=>setQuery(e.target.value)}
-          placeholder="Sembol ara (örn: BTC, ETH, OP, TAO, SEI...)"
-          style={{padding:"8px 12px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1", minWidth:260}}
+          onKeyDown={onKey}
+          placeholder="Sembol yaz (BTC veya BTCUSDT)"
+          style={{padding:"8px 12px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1", minWidth:240}}
         />
+        <button
+          onClick={doSearch}
+          style={{padding:"8px 12px", background:"#2152a3", border:"1px solid #2e5fb6", borderRadius:10, color:"#fff", fontWeight:800}}
+        >
+          Ara
+        </button>
+        <button
+          onClick={()=>{ setQuery(""); setActive(adminSymbols); setSearchInfo(""); }}
+          style={{padding:"8px 12px", background:"#1b2235", border:"1px solid #2e3750", borderRadius:10, color:"#fff", fontWeight:800}}
+        >
+          Sıfırla
+        </button>
 
         <select value={interval} onChange={e=>setIntervalStr(e.target.value)}
           style={{padding:"8px 10px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1"}}>
           {["1m","5m","15m","1h","4h"].map(x=><option key={x} value={x}>{x}</option>)}
         </select>
 
-        <button onClick={()=>load(filtered)} disabled={loading}
+        <button onClick={()=>load(active)} disabled={loading}
           style={{padding:"8px 12px", background:"#1b2235", border:"1px solid #2e3750", borderRadius:10, color:"#fff", fontWeight:800}}>
           {loading? "Yükleniyor…" : "Yenile"}
         </button>
@@ -172,12 +205,16 @@ export default function Home() {
         </label>
       </div>
 
+      {searchInfo && (
+        <div style={{marginBottom:10, color:"#ff8a8a", fontWeight:700}}>{searchInfo}</div>
+      )}
+
       {/* 1) CANLI TABLO (Realtime) */}
       <section style={{marginBottom:18}}>
         <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8}}>
           <div style={{fontWeight:800, opacity:.95}}>Canlı Akış (Binance Futures)</div>
           <div style={{opacity:.75, fontSize:12}}>
-            Semboller: {filtered.join(", ") || "—"}
+            Semboller: {active.join(", ") || "—"}
           </div>
         </div>
 
@@ -192,7 +229,7 @@ export default function Home() {
           </div>
 
           <RealtimePanel
-            symbols={filtered}
+            symbols={active}
             staleAfterMs={5000}
             longShortFetchEveryMs={30000}
             onOpenDetails={(symbol) => router.push(`/coin/${symbol}`)}
@@ -204,7 +241,7 @@ export default function Home() {
       <section>
         <div style={{fontWeight:800, opacity:.95, margin:"8px 0 12px"}}>Hızlı Özet Kartları</div>
         <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(290px, 1fr))", gap:14}}>
-          {filtered.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
+          {active.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
         </div>
       </section>
     </main>
@@ -253,4 +290,5 @@ function CoinCard({ sym, row }) {
     </Link>
   );
 }
+
 
