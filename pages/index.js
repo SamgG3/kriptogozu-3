@@ -39,12 +39,22 @@ function biasFromLatest(L){
 export default function Home() {
   const router = useRouter();
 
+  // Tema & veri durumları
+  const [darkMode, setDarkMode] = useState(false);
   const [symbols] = useState(DEFAULTS);
   const [interval, setIntervalStr] = useState("1m");
   const [rows, setRows] = useState({});
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
   const timer = useRef(null);
+
+  const rootStyle = {
+    padding: "16px 18px",
+    background: darkMode ? "#0b0d14" : "#0f1320",
+    minHeight: "100vh",
+    color: "#f2f4f8",
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+  };
 
   async function load() {
     try {
@@ -70,7 +80,7 @@ export default function Home() {
   }, [auto, interval, symbols]);
 
   return (
-    <main style={{padding:"16px 18px", background:"#0b0d14", minHeight:"100vh", color:"#f2f4f8", fontFamily:"system-ui, -apple-system, Segoe UI, Roboto, Arial"}}>
+    <main style={rootStyle}>
       {/* ÜST BAR */}
       <div style={{display:"flex", gap:12, alignItems:"center", marginBottom:12, flexWrap:"wrap"}}>
         <h1 style={{margin:0, fontSize:22, fontWeight:900}}>KriptoGözü • Genel Panel</h1>
@@ -83,13 +93,20 @@ export default function Home() {
           style={{padding:"8px 12px", background:"#1b2235", border:"1px solid #2e3750", borderRadius:10, color:"#fff", fontWeight:800}}>
           {loading? "Yükleniyor…" : "Yenile"}
         </button>
+        <button
+          onClick={() => setDarkMode(v=>!v)}
+          style={{ padding:"8px 12px", background:"#2a2f45", border:"1px solid #3a4360",
+                   borderRadius:10, color:"#fff", fontWeight:800 }}
+        >
+          Tema: {darkMode ? "Koyu" : "Daha Koyu"}
+        </button>
         <label style={{marginLeft:8, display:"flex", alignItems:"center", gap:8}}>
           <input type="checkbox" checked={auto} onChange={e=>setAuto(e.target.checked)}/>
           10 sn’de bir otomatik yenile
         </label>
       </div>
 
-      {/* 1) CANLI TABLO */}
+      {/* 1) CANLI TABLO (Realtime) */}
       <section style={{marginBottom:18}}>
         <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8}}>
           <div style={{fontWeight:800, opacity:.95}}>Canlı Akış (Binance Futures)</div>
@@ -105,7 +122,7 @@ export default function Home() {
             <div style={{textAlign:"center"}}>Long/Short</div>
             <div style={{textAlign:"center"}}>⭐</div>
           </div>
-          {/* Realtime Panel */}
+
           <RealtimePanel
             symbols={symbols}
             staleAfterMs={5000}
@@ -168,13 +185,3 @@ function CoinCard({ sym, row }) {
     </Link>
   );
 }
-
-
-
-
-
-
-
-
-
-
