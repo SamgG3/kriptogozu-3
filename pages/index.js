@@ -1,128 +1,135 @@
-// Ana sayfa: coin listesi + indikatör özetleri + tıkla → /coin/[symbol]
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
-const SYMBOLS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
-const INTERVAL = "1m";           // ana sayfada sabit aralık (istersen dropdown’a çevirebiliriz)
-const REFRESH_MS = 10000;        // 10 sn otomatik yenile
+const DEFAULTS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
 
-const fmt  = (n,d=2)=> (n==null||isNaN(n))?"—":Number(n).toLocaleString("tr-TR",{minimumFractionDigits:d,maximumFractionDigits:d});
-const pct  = (n,d=2)=> (n==null||isNaN(n))?"—":(n>=0?"+":"")+Number(n).toFixed(d)+"%";
-const sign = (v)=> v==null?"—":(v>0?"+":"") + v.toFixed(2);
+const fmtPrice = (v)=>{
+  if (v==null || isNaN(v)) return "—";
+  const a = Math.abs(v);
+  const d = a >= 100 ? 2 : a >= 1 ? 4 : 6; // büyük fiyat 2, orta 4, küçük 6 hane
+  return Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
+};
+const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
+  Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
+const pct = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
+  (v>=0?"+":"")+Number(v).toFixed(d)+"%";
 
 export default function Home() {
-  const [data, setData] = useState({});     // { BTCUSDT: {latest:{...}} }
+  const [symbols, setSymbols] = useState(DEFAULTS);
+  const [interval, setIntervalStr] = useState("1m");
+  const [rows, setRows] = useState({}); // {SYM: json}
   const [loading, setLoading] = useState(false);
+  const [auto, setAuto] = useState(true);
   const timer = useRef(null);
 
   async function load() {
     try {
       setLoading(true);
-      const results = await Promise.all(
-        SYMBOLS.map(sym =>
-          fetch(`/api/futures/indicators?symbol=${sym}&interval=${INTERVAL}&limit=300`, { cache:"no-store" })
-            .then(r => r.json())
-            .then(j => [sym, j])
-            .catch(() => [sym, null])
+      const res = await Promise.all(
+        symbols.map(sym =>
+          fetch(`/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`, { cache:"no-store" })
+            .then(r=>r.json())
+            .catch(()=>null)
         )
       );
       const map = {};
-      for (const [sym, j] of results) map[sym] = j;
-      setData(map);
-    } finally {
-      setLoading(false);
-    }
+      symbols.forEach((sym, i)=> map[sym] = res[i]);
+      setRows(map);
+    } finally { setLoading(false); }
   }
 
-  useEffect(()=>{ load(); }, []);
+  useEffect(()=>{ load(); }, [interval, symbols]);
   useEffect(()=>{
     if (timer.current) clearInterval(timer.current);
-    timer.current = setInterval(load, REFRESH_MS);
+    if (auto) timer.current = setInterval(load, 10000);
     return ()=> clearInterval(timer.current);
-  }, []);
+  }, [auto, interval, symbols]);
 
   return (
-    <main style={{minHeight:"100vh", background:"#0f1115", color:"#e6e6e6", fontFamily:"system-ui"}}>
-      <header style={{padding:"18px 24px", borderBottom:"1px solid #23283b", display:"flex", gap:16, alignItems:"center"}}>
-        <h1 style={{margin:0, fontSize:22}}>KriptoGözÜ • Binance Futures</h1>
-        <span style={{opacity:.7}}>({INTERVAL})</span>
+    <main style={{padding:"16px 18px"}}>
+      {/* üst kontrol barı */}
+      <div style={{display:"flex", gap:12, alignItems:"center", marginBottom:12}}>
+        <h1 style={{margin:0, fontSize:20}}>KriptoGözÜ • Genel Panel</h1>
+        <span style={{opacity:.7}}>({interval})</span>
+        <select value={interval} onChange={e=>setIntervalStr(e.target.value)}
+          style={{padding:"8px 10px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#e6e6e6"}}>
+          {["1m","5m","15m","1h","4h"].map(x=><option key={x} value={x}>{x}</option>)}
+        </select>
         <button onClick={load} disabled={loading}
-          style={{marginLeft:"auto", padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700, cursor:"pointer"}}>
-          {loading ? "Yükleniyor…" : "Yenile"}
+          style={{padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700}}>
+          {loading? "Yükleniyor…" : "Yenile"}
         </button>
-      </header>
+        <label style={{marginLeft:8, display:"flex", alignItems:"center", gap:8}}>
+          <input type="checkbox" checked={auto} onChange={e=>setAuto(e.target.checked)}/>
+          10 sn’de bir otomatik yenile
+        </label>
+      </div>
 
-      <section style={{padding:"16px 24px", display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(260px, 1fr))", gap:12}}>
-        {SYMBOLS.map(sym => <CoinCard key={sym} sym={sym} row={data[sym]} />)}
-      </section>
+      {/* coin grid */}
+      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(280px, 1fr))", gap:12}}>
+        {symbols.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
+      </div>
     </main>
   );
 }
 
 function CoinCard({ sym, row }) {
-  const L = row?.latest;
-  // Özet metrikler
-  const close = L?.close, ema20 = L?.ema20, rsi = L?.rsi14, k = L?.stochK, d = L?.stochD, bu = L?.bbUpper, bl = L?.bbLower;
-  const emaDist = (close!=null && ema20!=null) ? ((close-ema20)/ema20*100) : null;        // fiyat/EMA20 %
-  const bandPos = (bu!=null && bl!=null && close!=null) ? ((close-bl)/(bu-bl)*100) : null; // banttaki konum %
-  const bandWid = (bu!=null && bl!=null && close!=null) ? ((bu-bl)/close*100) : null;      // bant genişliği %
-  const kCross  = (k!=null && d!=null) ? (k-d) : null;                                      // K-%D farkı
+  const L = row?.latest || {};
+  const close = L.close, ema20 = L.ema20, rsi = L.rsi14, k = L.stochK, d = L.stochD, bu = L.bbUpper, bl = L.bbLower;
 
-  // Hızlı renk sinyali (çok basit – sonra kuralları geliştiririz)
-  const bullScore =
-    (emaDist>0?1:0) +
-    (rsi!=null && rsi>50?1:0) +
-    (kCross!=null && kCross>0?1:0);
-  const border = bullScore>=2 ? "#1f7a4f" : bullScore<=1 ? "#7a2e2e" : "#2a2f45";
+  const emaDist = (close!=null && ema20!=null) ? ((close-ema20)/ema20*100) : null;
+  const bandPos = (bu!=null && bl!=null && close!=null) ? ((close-bl)/(bu-bl)*100) : null;
+  const kCross  = (k!=null && d!=null) ? (k-d) : null;
+
+  // Basit AI sinyal skoru (sonra kuralları derinleştiririz)
+  const score =
+    (emaDist!=null ? (emaDist>0 ? 1 : -1) : 0) +
+    (rsi!=null ? (rsi>55 ? 1 : rsi<45 ? -1 : 0) : 0) +
+    (kCross!=null ? (kCross>0 ? 1 : -1) : 0);
+  const signal = score >= 2 ? "AL" : score <= -2 ? "SAT" : "NÖTR";
+  const color  = signal==="AL" ? "#20c997" : signal==="SAT" ? "#ff6b6b" : "#89a";
+  const border = signal==="AL" ? "#1f7a4f" : signal==="SAT" ? "#7a2e2e" : "#2a2f45";
 
   return (
     <Link href={`/coin/${sym}`} style={{textDecoration:"none"}}>
-      <div style={{
-        background:"#151a2b", border:`1px solid ${border}`, borderRadius:12, padding:14,
-        display:"grid", gap:10, gridTemplateRows:"auto auto"
-      }}>
-        <div style={{display:"flex", alignItems:"baseline", gap:10}}>
+      <div style={{background:"#151a2b", border:`1px solid ${border}`, borderRadius:12, padding:14}}>
+        {/* üst başlık */}
+        <div style={{display:"flex", gap:12, alignItems:"baseline", marginBottom:8}}>
           <div style={{fontWeight:800, fontSize:18, color:"#8bd4ff"}}>{sym}</div>
-          <div style={{opacity:.8, fontSize:13}}>Close: {fmt(close)}</div>
+          <span style={{opacity:.8}}>Son: <b>{fmtPrice(close)}</b></span>
+          <span style={{marginLeft:"auto", fontWeight:800, color:color}}>AI: {signal}</span>
         </div>
 
-        {/* Özet indikatör pulları */}
-        <div style={{display:"flex", flexWrap:"wrap", gap:8}}>
-          <Pill label="EMA20"  value={`${pct(emaDist)}`}           hint={`Fiyat/EMA20: ${pct(emaDist)}`}/>
-          <Pill label="RSI(14)" value={fmt(rsi,2)}                  hint={rsiInfo(rsi)}/>
-          <Pill label="Stoch K-D" value={kCross==null?"—":sign(kCross)} hint="K - %D"/>
-          <Pill label="Band Pos" value={pct(bandPos)}               hint="Banttaki konum"/>
-          <Pill label="Band Gen" value={pct(bandWid)}               hint="Bant genişliği"/>
+        {/* indikatör sayıları (grafik yok) */}
+        <div style={{display:"grid", gridTemplateColumns:"repeat(2, minmax(0, 1fr))", gap:8}}>
+          <Row label="EMA20"   val={`${fmtPrice(ema20)}  •  Fiyat/EMA: ${pct(emaDist)}`} />
+          <Row label="RSI(14)" val={`${fmt(rsi,2)}  (${rsiInfo(rsi)})`} />
+          <Row label="Stoch %K" val={fmt(k,2)} />
+          <Row label="Stoch %D" val={fmt(d,2)} />
+          <Row label="BB Üst"  val={fmtPrice(bu)} />
+          <Row label="BB Alt"  val={fmtPrice(bl)} />
+          <Row label="Bant Konumu" val={pct(bandPos)} />
         </div>
 
-        <div style={{opacity:.7, fontSize:12}}>
-          Tıkla → detay, grafik ve AI plan
-        </div>
+        <div style={{opacity:.7, fontSize:12, marginTop:10}}>Tıkla → detay & AI trade plan</div>
       </div>
     </Link>
   );
 }
 
-function Pill({ label, value, hint }) {
+function Row({ label, val }) {
   return (
-    <div title={hint}
-      style={{display:"inline-flex", gap:6, alignItems:"center", padding:"6px 8px", background:"#0f1424",
-              border:"1px solid #26304a", borderRadius:999}}>
-      <span style={{opacity:.8, fontSize:12}}>{label}</span>
-      <strong style={{fontSize:12}}>{value}</strong>
+    <div style={{display:"flex", gap:8, alignItems:"center", background:"#0f1424",
+      border:"1px solid #26304a", borderRadius:8, padding:"6px 8px"}}>
+      <span style={{opacity:.8, minWidth:100}}>{label}</span>
+      <strong>{val}</strong>
     </div>
   );
 }
 
-function rsiInfo(rsi){
-  if (rsi==null) return "—";
-  if (rsi>=70) return "Aşırı Alım";
-  if (rsi<=30) return "Aşırı Satım";
+function rsiInfo(r){
+  if (r==null) return "—";
+  if (r>=70) return "Aşırı Alım";
+  if (r<=30) return "Aşırı Satım";
   return "Nötr";
 }
-
-
-
-
-
-
