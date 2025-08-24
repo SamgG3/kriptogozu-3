@@ -2,8 +2,8 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
-// RealtimePanel bileşenini components klasöründen alıyoruz
-import RealtimePanel from "../components/RealtimePanel";
+import dynamic from "next/dynamic"; // RealtimePanel'i client-only yükle
+const RealtimePanel = dynamic(() => import("../components/RealtimePanel"), { ssr: false });
 
 const DEFAULTS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
 
@@ -39,7 +39,6 @@ function biasFromLatest(L){
 export default function Home() {
   const router = useRouter();
 
-  // Üstteki canli tablo ve alttaki kartlar aynı sembol listesini kullanıyor
   const [symbols, setSymbols] = useState(DEFAULTS);
   const [interval, setIntervalStr] = useState("1m");
   const [rows, setRows] = useState({});
@@ -104,7 +103,7 @@ export default function Home() {
         />
       </section>
 
-      {/* 2) KART GÖRÜNÜMÜ (senin mevcut yapın) */}
+      {/* 2) KART GÖRÜNÜMÜ */}
       <section>
         <div style={{fontWeight:700, opacity:.9, margin:"8px 0 12px"}}>Hızlı Özet Kartları</div>
         <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))", gap:12}}>
@@ -154,6 +153,7 @@ function CoinCard({ sym, row }) {
     </Link>
   );
 }
+
 
 
 
