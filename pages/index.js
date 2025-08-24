@@ -6,13 +6,41 @@ const DEFAULTS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","D
 const fmtPrice = (v)=>{
   if (v==null || isNaN(v)) return "—";
   const a = Math.abs(v);
-  const d = a >= 100 ? 2 : a >= 1 ? 4 : 6; // büyük fiyat 2, orta 4, küçük 6 hane
+  const d = a >= 100 ? 2 : a >= 1 ? 4 : 6;
   return Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
 };
 const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
   Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
 const pct = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
   (v>=0?"+":"")+Number(v).toFixed(d)+"%";
+
+const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
+
+/** Long/Short yüzdesi hesaplama (0-100) */
+function biasFromLatest(L){
+  if(!L) return { longPct:50, shortPct:50, score:0 };
+
+  const close=L.close, ema=L.ema20, rsi=L.rsi14, k=L.stochK, d=L.stochD, bu=L.bbUpper, bl=L.bbLower;
+
+  const emaDist = (close!=null && ema!=null) ? ((close-ema)/ema*100) : null;          // %
+  const kCross  = (k!=null && d!=null) ? (k-d) : null;                                 // K - D
+  const bandPos = (bu!=null && bl!=null && close!=null) ? ((close-bl)/(bu-bl)*100) : null; // 0..100
+
+  // normalize [-1..1]
+  const nEMA   = emaDist==null ? 0 : clamp(emaDist/3, -1, 1);            // ±3% çevresinde doyum
+  const nRSI   = rsi==null ? 0 : clamp((rsi-50)/25, -1, 1);              // 25 puan=tam ölçek
+  const nKxD   = kCross==null ? 0 : clamp(kCross/50, -1, 1);             // 50 fark=tam ölçek
+  const nBand  = bandPos==null ? 0 : clamp((bandPos-50)/30, -1, 1);      // orta=50, 30 offset
+
+  // ağırlıklar toplamı = 1
+  const wEMA=0.35, wRSI=0.30, wKxD=0.20, wBand=0.15;
+
+  const score = (wEMA*nEMA + wRSI*nRSI + wKxD*nKxD + wBand*nBand);       // -1 … +1
+  const longPct = Math.round( (score+1)/2 * 100 );                        // 0 … 100
+  const shortPct = 100 - longPct;
+
+  return { longPct, shortPct, score };
+}
 
 export default function Home() {
   const [symbols, setSymbols] = useState(DEFAULTS);
@@ -66,7 +94,7 @@ export default function Home() {
       </div>
 
       {/* coin grid */}
-      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(280px, 1fr))", gap:12}}>
+      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))", gap:12}}>
         {symbols.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
       </div>
     </main>
@@ -81,12 +109,8 @@ function CoinCard({ sym, row }) {
   const bandPos = (bu!=null && bl!=null && close!=null) ? ((close-bl)/(bu-bl)*100) : null;
   const kCross  = (k!=null && d!=null) ? (k-d) : null;
 
-  // Basit AI sinyal skoru (sonra kuralları derinleştiririz)
-  const score =
-    (emaDist!=null ? (emaDist>0 ? 1 : -1) : 0) +
-    (rsi!=null ? (rsi>55 ? 1 : rsi<45 ? -1 : 0) : 0) +
-    (kCross!=null ? (kCross>0 ? 1 : -1) : 0);
-  const signal = score >= 2 ? "AL" : score <= -2 ? "SAT" : "NÖTR";
+  const { longPct, shortPct, score } = biasFromLatest(L);
+  const signal = longPct>=55 ? "AL" : shortPct>=55 ? "SAT" : "NÖTR";
   const color  = signal==="AL" ? "#20c997" : signal==="SAT" ? "#ff6b6b" : "#89a";
   const border = signal==="AL" ? "#1f7a4f" : signal==="SAT" ? "#7a2e2e" : "#2a2f45";
 
@@ -100,15 +124,14 @@ function CoinCard({ sym, row }) {
           <span style={{marginLeft:"auto", fontWeight:800, color:color}}>AI: {signal}</span>
         </div>
 
-        {/* indikatör sayıları (grafik yok) */}
+        {/* indikatör sayıları + long/short yüzdeleri */}
         <div style={{display:"grid", gridTemplateColumns:"repeat(2, minmax(0, 1fr))", gap:8}}>
           <Row label="EMA20"   val={`${fmtPrice(ema20)}  •  Fiyat/EMA: ${pct(emaDist)}`} />
           <Row label="RSI(14)" val={`${fmt(rsi,2)}  (${rsiInfo(rsi)})`} />
-          <Row label="Stoch %K" val={fmt(k,2)} />
-          <Row label="Stoch %D" val={fmt(d,2)} />
-          <Row label="BB Üst"  val={fmtPrice(bu)} />
-          <Row label="BB Alt"  val={fmtPrice(bl)} />
+          <Row label="Stoch K-D" val={kCross==null?"—":(kCross>0?"+":"")+fmt(Math.abs(kCross),2)} />
           <Row label="Bant Konumu" val={pct(bandPos)} />
+          <Row label="Long %"  val={`${fmt(longPct,0)}%`} />
+          <Row label="Short %" val={`${fmt(shortPct,0)}%`} />
         </div>
 
         <div style={{opacity:.7, fontSize:12, marginTop:10}}>Tıkla → detay & AI trade plan</div>
@@ -121,7 +144,7 @@ function Row({ label, val }) {
   return (
     <div style={{display:"flex", gap:8, alignItems:"center", background:"#0f1424",
       border:"1px solid #26304a", borderRadius:8, padding:"6px 8px"}}>
-      <span style={{opacity:.8, minWidth:100}}>{label}</span>
+      <span style={{opacity:.8, minWidth:110}}>{label}</span>
       <strong>{val}</strong>
     </div>
   );
