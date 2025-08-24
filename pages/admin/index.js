@@ -5,14 +5,17 @@ const fmt = (n,d=2)=> (n==null||isNaN(n))?"—":Number(n).toLocaleString("tr-TR"
 const pct = (n,d=2)=> (n==null||isNaN(n))?"—":(n>=0?"+":"")+Number(n).toFixed(d)+"%";
 
 export default function Admin(){
-  const [symbol, setSymbol]   = useState("BTCUSDT");
-  const [interval, setInterval] = useState("1m");
-  const [latest, setLatest]   = useState(null);
-  const [series, setSeries]   = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [auto, setAuto]       = useState(true);
-  const [err, setErr]         = useState(null);
+  const [symbol, setSymbol] = useState("BTCUSDT");
+  // EN ÖNEMLİ DÜZELTME: setInterval ismi ÇAKIŞMASIN diye iv/setIv kullanıyoruz
+  const [iv, setIv] = useState("1m");
 
+  const [latest, setLatest] = useState(null);
+  const [series, setSeries] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [auto, setAuto] = useState(true);
+  const [err, setErr] = useState(null);
+
+  // trade plan
   const [entry, setEntry] = useState("");
   const [stop, setStop]   = useState("");
   const [t1, setT1]       = useState("");
@@ -23,7 +26,7 @@ export default function Admin(){
   async function load(){
     try{
       setLoading(true); setErr(null);
-      const r = await fetch(`/api/futures/indicators?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=300&series=1`, { cache:"no-store" });
+      const r = await fetch(`/api/futures/indicators?symbol=${encodeURIComponent(symbol)}&interval=${iv}&limit=300&series=1`, { cache:"no-store" });
       const j = await r.json();
       setLatest(j.latest || null);
       setSeries(j.series || null);
@@ -31,12 +34,14 @@ export default function Admin(){
     finally{ setLoading(false); }
   }
 
-  useEffect(()=>{ load(); }, [symbol, interval]);
+  useEffect(()=>{ load(); }, [symbol, iv]);
+
   useEffect(()=>{
-    if(timer.current) clearInterval(timer.current);
-    if(auto) timer.current = setInterval(load, 10000);
-    return ()=> timer.current && clearInterval(timer.current);
-  }, [auto, symbol, interval]);
+    // EN ÖNEMLİ DÜZELTME: tarayıcı setInterval’ı açıkça kullan
+    if (timer.current) clearInterval(timer.current);
+    if (auto) timer.current = window.setInterval(load, 10000);
+    return ()=> { if (timer.current) clearInterval(timer.current); };
+  }, [auto, symbol, iv]);
 
   const c  = latest?.close, e20 = latest?.ema20, r14 = latest?.rsi14;
   const bu = latest?.bbUpper, bl = latest?.bbLower, k = latest?.stochK, d = latest?.stochD;
@@ -48,23 +53,23 @@ export default function Admin(){
   const rsiLabel   = r14==null ? "—" : r14>=70 ? "Aşırı Alım" : r14<=30 ? "Aşırı Satım" : "Nötr";
   const stochLabel = (k!=null&&d!=null)?(k>d?"K>%D (yukarı)":"K<%D (aşağı)"):"—";
 
-  // Basit sinyal mantığı (bilgilendirme amaçlı)
+  // Basit sinyal (bilgilendirme)
   let signal = "Nötr";
   if (k!=null && d!=null) {
     if (k>d && c>e20 && r14<65) signal = "AL olasılığı ↑";
     if (k<d && c<e20 && r14>35) signal = "SAT olasılığı ↓";
   }
   if (bandPosPct!=null) {
-    if (bandPosPct >= 90) signal += " • Üst banda yakın (dikkat)";
-    if (bandPosPct <= 10) signal += " • Alt banda yakın (dikkat)";
+    if (bandPosPct >= 90) signal += " • Üst banda yakın";
+    if (bandPosPct <= 10) signal += " • Alt banda yakın";
   }
 
   // Trade plan RR
-  const f = (x)=> (x===""?null:Number(x));
-  const E=f(entry), S=f(stop), T1=f(t1), T2=f(t2);
-  const riskPct = (E!=null&&S!=null)?((E-S)/E*100):null;
-  const rr1 = (E!=null&&S!=null&&T1!=null)?((T1-E)/(E-S)):null;
-  const rr2 = (E!=null&&S!=null&&T2!=null)?((T2-E)/(E-S)):null;
+  const toNum = (x)=> x==="" ? null : Number(x);
+  const E = toNum(entry), S = toNum(stop), T1 = toNum(t1), T2 = toNum(t2);
+  const riskPct = (E!=null && S!=null) ? ((E-S)/E*100) : null;
+  const rr1 = (E!=null && S!=null && T1!=null) ? ((T1-E)/(E-S)) : null;
+  const rr2 = (E!=null && S!=null && T2!=null) ? ((T2-E)/(E-S)) : null;
 
   const tvUrl = `https://www.tradingview.com/chart/?symbol=BINANCE:${encodeURIComponent(symbol)}`;
 
@@ -83,9 +88,9 @@ export default function Admin(){
         <input value={symbol} onChange={e=>setSymbol(e.target.value.toUpperCase())}
           placeholder="BTCUSDT"
           style={{padding:"10px 12px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#e6e6e6"}} />
-        <select value={interval} onChange={e=>setInterval(e.target.value)}
+        <select value={iv} onChange={e=>setIv(e.target.value)}
           style={{padding:"10px 12px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#e6e6e6"}}>
-          {INTERVALS.map(iv => <option key={iv} value={iv}>{iv}</option>)}
+          {INTERVALS.map(x => <option key={x} value={x}>{x}</option>)}
         </select>
         <button onClick={load} disabled={loading}
           style={{padding:"10px 14px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700, cursor:"pointer"}}>
@@ -100,7 +105,7 @@ export default function Admin(){
 
       {/* Kartlar */}
       <section style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:12, padding:"0 24px 24px"}}>
-        <Card title={`${symbol} (${interval})`} value={fmt(c)} sub="Son Kapanış"/>
+        <Card title={`${symbol} (${iv})`} value={fmt(c)} sub="Son Kapanış"/>
         <Card title="EMA20" value={fmt(e20)} sub={`Fiyat/EMA: ${pct(distEmaPct)}`} highlight={distEmaPct!=null && Math.abs(distEmaPct)>=1}/>
         <Card title="RSI(14)" value={fmt(r14)} sub={rsiLabel} highlight={r14!=null && (r14<=30 || r14>=70)}/>
         <Card title="StochRSI %K" value={fmt(k)} sub={stochLabel}/>
@@ -127,8 +132,10 @@ export default function Admin(){
           <Input label="Target 1" value={t1} onChange={setT1}/>
           <Input label="Target 2" value={t2} onChange={setT2}/>
         </div>
+
+        {/* RR ve Risk hesaplarını düzgün hesapla */}
         <div style={{marginTop:12, display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:12}}>
-          <Card title="Risk %" value={pct((E,S)=>(E&&S)?((E-S)/E*100):null)(Number(entry)||null, Number(stop)||null)} sub="(Entry-Stop) / Entry"/>
+          <Card title="Risk %" value={pct(riskPct)} sub="(Entry-Stop) / Entry"/>
           <Card title="RR (T1)" value={rr1==null?"—":rr1.toFixed(2)+"R"} sub="(T1-Entry)/(Entry-Stop)"/>
           <Card title="RR (T2)" value={rr2==null?"—":rr2.toFixed(2)+"R"} sub="(T2-Entry)/(Entry-Stop)"/>
         </div>
@@ -177,15 +184,14 @@ function MiniChart({ series }) {
 
   return (
     <svg width="100%" viewBox={`0 0 ${W} ${H}`}>
-      {/* bands */}
       <path d={path(bbUpper)} stroke="#5a6b9a" fill="none" strokeWidth="1.2"/>
       <path d={path(bbLower)} stroke="#5a6b9a" fill="none" strokeWidth="1.2"/>
-      {/* ema & close */}
       <path d={path(ema20)} stroke="#f2c94c" fill="none" strokeWidth="1.5"/>
       <path d={path(closes)} stroke="#20b7ff" fill="none" strokeWidth="1.3"/>
     </svg>
   );
 }
+
 
 
 
