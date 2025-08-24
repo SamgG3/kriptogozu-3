@@ -4,15 +4,17 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import dynamic from "next/dynamic";
 
-// RealtimePanel'i sadece client'ta çalıştır
+// Client-only bileşenler
 const RealtimePanel = dynamic(() => import("../components/RealtimePanel"), { ssr: false });
+const WhaleTape     = dynamic(() => import("../components/WhaleTape"),     { ssr: false });
 
-// Yedek liste (admin/localStorage veya katalog gelene kadar)
+// Yedek liste (admin/localStorage ya da katalog gelene kadar)
 const FALLBACK = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
 
 const INDICATORS_API = (sym, interval) =>
   `/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`;
 
+// ----------------- yardımcı formatlayıcılar -----------------
 const fmtPrice = (v)=>{
   if (v==null || isNaN(v)) return "—";
   const a = Math.abs(v);
@@ -40,29 +42,31 @@ function biasFromLatest(L){
   return { longPct, shortPct, score };
 }
 
+// ============================================================
+
 export default function Home() {
   const router = useRouter();
 
-  // Tema & durumlar
+  // Tema & görünüm
   const [darkMode, setDarkMode] = useState(false);
-
-  // Kataloglar
-  const [allSymbols, setAllSymbols] = useState(FALLBACK);     // Binance USDT perpetual TRADING kataloğu
-  const [adminSymbols, setAdminSymbols] = useState(FALLBACK); // Admin/localStorage listesi
-
-  // Görünüm
   const [interval, setIntervalStr] = useState("1m");
-  const [rows, setRows] = useState({});
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
   const timer = useRef(null);
 
-  // Arama kontrolü (butonlu)
-  const [query, setQuery] = useState("");          // inputtaki yazı
-  const [active, setActive] = useState(FALLBACK);  // şu an tabloda gösterilen semboller
-  const [searchInfo, setSearchInfo] = useState(""); // bilgi mesajı (bulunamadı vb.)
+  // Kataloglar
+  const [allSymbols, setAllSymbols] = useState(FALLBACK);     // Binance USDT perpetual (TRADING) katalog
+  const [adminSymbols, setAdminSymbols] = useState(FALLBACK); // Admin/localStorage listesi
 
-  // 1) Admin listesini yükle (varsa onu varsayılan görünüm yap)
+  // Aktif görünüm & veriler
+  const [active, setActive] = useState(FALLBACK);   // tabloda gösterilen semboller
+  const [rows, setRows]     = useState({});
+
+  // Arama (butonlu & tam eşleşme)
+  const [query, setQuery]     = useState("");
+  const [searchInfo, setInfo] = useState("");
+
+  // --------- Admin listesini yükle ----------
   useEffect(()=>{
     if (typeof window === "undefined") return;
     try{
@@ -78,7 +82,7 @@ export default function Home() {
     }catch{}
   },[]);
 
-  // 2) Binance USDT Futures katalog (TRADING)
+  // --------- Binance katalog (USDT, PERPETUAL, TRADING) ----------
   useEffect(()=>{
     let stop=false;
     async function pull(){
@@ -95,7 +99,7 @@ export default function Home() {
     return ()=>{ stop=true; };
   },[]);
 
-  // 3) Veri çekme
+  // --------- Veri çekme ----------
   async function load(list = active) {
     if (!list || !list.length) { setRows({}); return; }
     try {
@@ -120,31 +124,23 @@ export default function Home() {
     return ()=> { if (timer.current) clearInterval(timer.current); };
   }, [auto, interval, active]);
 
-  // 4) ARA butonu — sadece yazılan coin görünsün (tam eşleşme)
+  // --------- ARA butonu (tam eşleşme) ----------
   function doSearch() {
     const raw = (query||"").trim().toUpperCase();
     if (!raw) {
-      setActive(adminSymbols);         // boşsa admin/default görünümüne dön
-      setSearchInfo("");
-      return;
+      setActive(adminSymbols); setInfo(""); return;
     }
-    // Kullanıcı "BTC" yazarsa "BTCUSDT" olarak tamamla
     const wanted = raw.endsWith("USDT") ? raw : `${raw}USDT`;
     const base = new Set([...(adminSymbols||[]), ...(allSymbols||[])]);
     if (base.has(wanted)) {
-      setActive([wanted]);             // yalnızca tek sonuç göster
-      setSearchInfo("");
+      setActive([wanted]); setInfo("");
     } else {
-      setActive([]);                   // tabloyu boşalt
-      setSearchInfo(`${wanted} bulunamadı (sadece USDT perpetual & TRADING semboller gösterilir).`);
+      setActive([]); setInfo(`${wanted} bulunamadı (sadece USDT perpetual & TRADING).`);
     }
   }
+  function onKey(e){ if (e.key === "Enter") doSearch(); }
 
-  // Enter'a basınca da ara
-  function onKey(e){
-    if (e.key === "Enter") doSearch();
-  }
-
+  // --------- Stil ---------
   const rootStyle = {
     padding: "16px 18px",
     background: darkMode ? "#0b0d14" : "#0f1320",
@@ -160,7 +156,7 @@ export default function Home() {
         <h1 style={{margin:0, fontSize:22, fontWeight:900}}>KriptoGözü • Genel Panel</h1>
         <span style={{opacity:.85}}>(kartlarda AI özet • detay için tıkla)</span>
 
-        {/* Arama kutusu + buton */}
+        {/* Arama kutusu + butonlar */}
         <input
           value={query}
           onChange={e=>setQuery(e.target.value)}
@@ -175,7 +171,7 @@ export default function Home() {
           Ara
         </button>
         <button
-          onClick={()=>{ setQuery(""); setActive(adminSymbols); setSearchInfo(""); }}
+          onClick={()=>{ setQuery(""); setActive(adminSymbols); setInfo(""); }}
           style={{padding:"8px 12px", background:"#1b2235", border:"1px solid #2e3750", borderRadius:10, color:"#fff", fontWeight:800}}
         >
           Sıfırla
@@ -208,6 +204,12 @@ export default function Home() {
       {searchInfo && (
         <div style={{marginBottom:10, color:"#ff8a8a", fontWeight:700}}>{searchInfo}</div>
       )}
+
+      {/* BALİNA AKIŞI */}
+      <section style={{margin:"12px 0 18px"}}>
+        {/* Eşik tutarı değiştirilebilir: bigTradeUsd */}
+        <WhaleTape symbols={active} bigTradeUsd={200000} />
+      </section>
 
       {/* 1) CANLI TABLO (Realtime) */}
       <section style={{marginBottom:18}}>
@@ -248,6 +250,7 @@ export default function Home() {
   );
 }
 
+// ----------------- Kart bileşeni -----------------
 function CoinCard({ sym, row }) {
   const L = row?.latest || {};
   const close = L?.close;
@@ -290,5 +293,3 @@ function CoinCard({ sym, row }) {
     </Link>
   );
 }
-
-
