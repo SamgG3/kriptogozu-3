@@ -1,35 +1,40 @@
-// Sunucuda fiyatları çekip ilk yüklemede ekrana basar (JS'e gerek kalmaz)
-export async function getServerSideProps({ req }) {
-  const base = `https://${req.headers.host}`;
-  const res = await fetch(`${base}/api/futures/price?symbols=BTCUSDT,ETHUSDT`);
-  const data = await res.json();
-  return { props: { data } };
+export async function getServerSideProps() {
+  try {
+    const res = await fetch("https://fapi.binance.com/fapi/v1/ticker/price?symbol=BTCUSDT");
+    const btc = await res.json();
+    const res2 = await fetch("https://fapi.binance.com/fapi/v1/ticker/price?symbol=ETHUSDT");
+    const eth = await res2.json();
+
+    return {
+      props: {
+        prices: {
+          BTCUSDT: btc.price,
+          ETHUSDT: eth.price,
+        },
+      },
+    };
+  } catch (err) {
+    return {
+      props: {
+        prices: {
+          BTCUSDT: null,
+          ETHUSDT: null,
+        },
+      },
+    };
+  }
 }
 
-export default function Home({ data }) {
+export default function Home({ prices }) {
   return (
     <main style={{padding:"24px", fontFamily:"system-ui", color:"#e6e6e6", background:"#0f1115", minHeight:"100vh"}}>
       <h1 style={{color:"#59c1ff"}}>KriptoGözü • Binance Futures</h1>
-      <p>API test: <code>/api/futures/price?symbols=BTCUSDT,ETHUSDT</code></p>
-
-      <div style={{marginTop:16, display:"flex", gap:16}}>
-        <div style={{padding:12, background:"#151a2b", border:"1px solid #26304a", borderRadius:10}}>
-          <div>BTCUSDT</div>
-          <div style={{fontSize:24, fontWeight:700}}>{data?.BTCUSDT ?? "-"}</div>
-        </div>
-        <div style={{padding:12, background:"#151a2b", border:"1px solid #26304a", borderRadius:10}}>
-          <div>ETHUSDT</div>
-          <div style={{fontSize:24, fontWeight:700}}>{data?.ETHUSDT ?? "-"}</div>
-        </div>
-      </div>
-
-      <p style={{marginTop:16}}>
-        <a href="/api/futures/price?symbols=BTCUSDT,ETHUSDT" style={{color:"#8bd4ff"}}>JSON’u gör</a> •
-        <a href="/" style={{marginLeft:8, color:"#8bd4ff"}}>Yenile</a>
-      </p>
+      <p>BTCUSDT: <b>{prices.BTCUSDT ?? "?"}</b></p>
+      <p>ETHUSDT: <b>{prices.ETHUSDT ?? "?"}</b></p>
     </main>
   );
 }
+
 
 
 
