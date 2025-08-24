@@ -1,3 +1,4 @@
+// pages/index.js
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
@@ -13,39 +14,29 @@ const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
   Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
 const pct = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
   (v>=0?"+":"")+Number(v).toFixed(d)+"%";
-
 const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
 
-/** Long/Short yüzdesi hesaplama (0-100) */
 function biasFromLatest(L){
   if(!L) return { longPct:50, shortPct:50, score:0 };
-
   const close=L.close, ema=L.ema20, rsi=L.rsi14, k=L.stochK, d=L.stochD, bu=L.bbUpper, bl=L.bbLower;
-
-  const emaDist = (close!=null && ema!=null) ? ((close-ema)/ema*100) : null;          // %
-  const kCross  = (k!=null && d!=null) ? (k-d) : null;                                 // K - D
-  const bandPos = (bu!=null && bl!=null && close!=null) ? ((close-bl)/(bu-bl)*100) : null; // 0..100
-
-  // normalize [-1..1]
-  const nEMA   = emaDist==null ? 0 : clamp(emaDist/3, -1, 1);            // ±3% çevresinde doyum
-  const nRSI   = rsi==null ? 0 : clamp((rsi-50)/25, -1, 1);              // 25 puan=tam ölçek
-  const nKxD   = kCross==null ? 0 : clamp(kCross/50, -1, 1);             // 50 fark=tam ölçek
-  const nBand  = bandPos==null ? 0 : clamp((bandPos-50)/30, -1, 1);      // orta=50, 30 offset
-
-  // ağırlıklar toplamı = 1
+  const emaDist = (close!=null && ema!=null) ? ((close-ema)/ema*100) : null;
+  const kCross  = (k!=null && d!=null) ? (k-d) : null;
+  const bandPos = (bu!=null && bl!=null && close!=null) ? ((close-bl)/(bu-bl)*100) : null;
+  const nEMA   = emaDist==null ? 0 : clamp(emaDist/3, -1, 1);
+  const nRSI   = rsi==null ? 0 : clamp((rsi-50)/25, -1, 1);
+  const nKxD   = kCross==null ? 0 : clamp(kCross/50, -1, 1);
+  const nBand  = bandPos==null ? 0 : clamp((bandPos-50)/30, -1, 1);
   const wEMA=0.35, wRSI=0.30, wKxD=0.20, wBand=0.15;
-
-  const score = (wEMA*nEMA + wRSI*nRSI + wKxD*nKxD + wBand*nBand);       // -1 … +1
-  const longPct = Math.round( (score+1)/2 * 100 );                        // 0 … 100
+  const score = (wEMA*nEMA + wRSI*nRSI + wKxD*nKxD + wBand*nBand);
+  const longPct = Math.round( (score+1)/2 * 100 );
   const shortPct = 100 - longPct;
-
   return { longPct, shortPct, score };
 }
 
 export default function Home() {
   const [symbols, setSymbols] = useState(DEFAULTS);
   const [interval, setIntervalStr] = useState("1m");
-  const [rows, setRows] = useState({}); // {SYM: json}
+  const [rows, setRows] = useState({});
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
   const timer = useRef(null);
@@ -75,7 +66,6 @@ export default function Home() {
 
   return (
     <main style={{padding:"16px 18px"}}>
-      {/* üst kontrol barı */}
       <div style={{display:"flex", gap:12, alignItems:"center", marginBottom:12}}>
         <h1 style={{margin:0, fontSize:20}}>KriptoGözÜ • Genel Panel</h1>
         <span style={{opacity:.7}}>({interval})</span>
@@ -93,7 +83,6 @@ export default function Home() {
         </label>
       </div>
 
-      {/* coin grid */}
       <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))", gap:12}}>
         {symbols.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
       </div>
@@ -109,33 +98,33 @@ function CoinCard({ sym, row }) {
   const bandPos = (bu!=null && bl!=null && close!=null) ? ((close-bl)/(bu-bl)*100) : null;
   const kCross  = (k!=null && d!=null) ? (k-d) : null;
 
-  const { longPct, shortPct, score } = biasFromLatest(L);
+  const { longPct, shortPct } = biasFromLatest(L);
   const signal = longPct>=55 ? "AL" : shortPct>=55 ? "SAT" : "NÖTR";
   const color  = signal==="AL" ? "#20c997" : signal==="SAT" ? "#ff6b6b" : "#89a";
   const border = signal==="AL" ? "#1f7a4f" : signal==="SAT" ? "#7a2e2e" : "#2a2f45";
 
   return (
-    <Link href={`/coin/${sym}`} style={{textDecoration:"none"}}>
-      <div style={{background:"#151a2b", border:`1px solid ${border}`, borderRadius:12, padding:14}}>
-        {/* üst başlık */}
-        <div style={{display:"flex", gap:12, alignItems:"baseline", marginBottom:8}}>
-          <div style={{fontWeight:800, fontSize:18, color:"#8bd4ff"}}>{sym}</div>
-          <span style={{opacity:.8}}>Son: <b>{fmtPrice(close)}</b></span>
-          <span style={{marginLeft:"auto", fontWeight:800, color:color}}>AI: {signal}</span>
-        </div>
+    <Link href={`/coin/${sym}`} legacyBehavior>
+      <a style={{textDecoration:"none"}}>
+        <div style={{background:"#151a2b", border:`1px solid ${border}`, borderRadius:12, padding:14}}>
+          <div style={{display:"flex", gap:12, alignItems:"baseline", marginBottom:8}}>
+            <div style={{fontWeight:800, fontSize:18, color:"#8bd4ff"}}>{sym}</div>
+            <span style={{opacity:.8}}>Son: <b>{fmtPrice(close)}</b></span>
+            <span style={{marginLeft:"auto", fontWeight:800, color:color}}>AI: {signal}</span>
+          </div>
 
-        {/* indikatör sayıları + long/short yüzdeleri */}
-        <div style={{display:"grid", gridTemplateColumns:"repeat(2, minmax(0, 1fr))", gap:8}}>
-          <Row label="EMA20"   val={`${fmtPrice(ema20)}  •  Fiyat/EMA: ${pct(emaDist)}`} />
-          <Row label="RSI(14)" val={`${fmt(rsi,2)}  (${rsiInfo(rsi)})`} />
-          <Row label="Stoch K-D" val={kCross==null?"—":(kCross>0?"+":"")+fmt(Math.abs(kCross),2)} />
-          <Row label="Bant Konumu" val={pct(bandPos)} />
-          <Row label="Long %"  val={`${fmt(longPct,0)}%`} />
-          <Row label="Short %" val={`${fmt(shortPct,0)}%`} />
-        </div>
+          <div style={{display:"grid", gridTemplateColumns:"repeat(2, minmax(0, 1fr))", gap:8}}>
+            <Row label="EMA20"   val={`${fmtPrice(ema20)}  •  Fiyat/EMA: ${pct(emaDist)}`} />
+            <Row label="RSI(14)" val={`${fmt(rsi,2)}  (${rsiInfo(rsi)})`} />
+            <Row label="Stoch K-D" val={kCross==null?"—":(kCross>0?"+":"")+fmt(Math.abs(kCross),2)} />
+            <Row label="Bant Konumu" val={pct(bandPos)} />
+            <Row label="Long %"  val={`${fmt(longPct,0)}%`} />
+            <Row label="Short %" val={`${fmt(shortPct,0)}%`} />
+          </div>
 
-        <div style={{opacity:.7, fontSize:12, marginTop:10}}>Tıkla → detay & AI trade plan</div>
-      </div>
+          <div style={{opacity:.7, fontSize:12, marginTop:10}}>Tıkla → detay & AI trade plan</div>
+        </div>
+      </a>
     </Link>
   );
 }
@@ -156,3 +145,4 @@ function rsiInfo(r){
   if (r<=30) return "Aşırı Satım";
   return "Nötr";
 }
+
