@@ -144,3 +144,4 @@ function MiniChart({ series }) {
     </svg>
   );
 }
+
