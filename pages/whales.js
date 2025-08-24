@@ -3,7 +3,6 @@ import dynamic from "next/dynamic";
 import React, { useState } from "react";
 
 const WhaleTape = dynamic(() => import("../components/WhaleTape"),   { ssr:false });
-const WhaleTicker = dynamic(() => import("../components/WhaleTicker"), { ssr:false });
 
 const CORE = ["BTCUSDT","ETHUSDT","BNBUSDT"];
 
@@ -24,9 +23,6 @@ export default function WhalesPage(){
       </div>
 
       <WhaleTape symbols={CORE} bigTradeUsd={threshold} />
-
-      {/* Alt bant her sayfada görmek istersen _app içine de alınabilir. Burada da gösterelim: */}
-      <WhaleTicker symbols={CORE} bigTradeUsd={threshold} />
     </main>
   );
 }
