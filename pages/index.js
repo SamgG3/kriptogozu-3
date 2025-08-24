@@ -8,13 +8,16 @@ import dynamic from "next/dynamic";
 const RealtimePanel = dynamic(() => import("../components/RealtimePanel"), { ssr: false });
 const WhaleTape     = dynamic(() => import("../components/WhaleTape"),     { ssr: false });
 
-// Yedek liste (admin/localStorage ya da katalog gelene kadar)
+/** Varsayılan çekirdek liste: sayfayı hafif tutar */
+const CORE = ["BTCUSDT","ETHUSDT","BNBUSDT"];
+
+/** Ararken referans için (admin/localStorage + katalog gelene kadar yedek) */
 const FALLBACK = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
 
 const INDICATORS_API = (sym, interval) =>
   `/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`;
 
-// ----------------- yardımcı formatlayıcılar -----------------
+/* helpers */
 const fmtPrice = (v)=>{
   if (v==null || isNaN(v)) return "—";
   const a = Math.abs(v);
@@ -24,7 +27,6 @@ const fmtPrice = (v)=>{
 const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
   Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
 const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
-
 function biasFromLatest(L){
   if(!L) return { longPct:50, shortPct:50, score:0 };
   const close=L?.close, ema=L?.ema20, rsi=L?.rsi14, k=L?.stochK, d=L?.stochD, bu=L?.bbUpper, bl=L?.bbLower;
@@ -42,8 +44,6 @@ function biasFromLatest(L){
   return { longPct, shortPct, score };
 }
 
-// ============================================================
-
 export default function Home() {
   const router = useRouter();
 
@@ -54,19 +54,19 @@ export default function Home() {
   const [auto, setAuto] = useState(true);
   const timer = useRef(null);
 
-  // Kataloglar
-  const [allSymbols, setAllSymbols] = useState(FALLBACK);     // Binance USDT perpetual (TRADING) katalog
-  const [adminSymbols, setAdminSymbols] = useState(FALLBACK); // Admin/localStorage listesi
+  // Kataloglar (arama için)
+  const [allSymbols, setAllSymbols] = useState(FALLBACK);     // Binance USDT perpetual (TRADING)
+  const [adminSymbols, setAdminSymbols] = useState(FALLBACK); // Admin/localStorage varsa
 
   // Aktif görünüm & veriler
-  const [active, setActive] = useState(FALLBACK);   // tabloda gösterilen semboller
+  const [active, setActive] = useState(CORE.slice()); // Varsayılan sadece BTC/ETH/BNB
   const [rows, setRows]     = useState({});
 
   // Arama (butonlu & tam eşleşme)
   const [query, setQuery]     = useState("");
   const [searchInfo, setInfo] = useState("");
 
-  // --------- Admin listesini yükle ----------
+  /* Admin listesini yükle (arama referansı olarak) */
   useEffect(()=>{
     if (typeof window === "undefined") return;
     try{
@@ -76,13 +76,12 @@ export default function Home() {
         if (Array.isArray(arr) && arr.length) {
           const uniq = Array.from(new Set(arr.map(s=>String(s).toUpperCase())));
           setAdminSymbols(uniq);
-          setActive(uniq); // varsayılan görünüm admin listesi
         }
       }
     }catch{}
   },[]);
 
-  // --------- Binance katalog (USDT, PERPETUAL, TRADING) ----------
+  /* Binance katalog (USDT, PERPETUAL, TRADING) */
   useEffect(()=>{
     let stop=false;
     async function pull(){
@@ -99,7 +98,7 @@ export default function Home() {
     return ()=>{ stop=true; };
   },[]);
 
-  // --------- Veri çekme ----------
+  /* Veri çekme */
   async function load(list = active) {
     if (!list || !list.length) { setRows({}); return; }
     try {
@@ -116,7 +115,6 @@ export default function Home() {
       setRows(map);
     } finally { setLoading(false); }
   }
-
   useEffect(()=>{ load(active); }, [interval, active]);
   useEffect(()=>{
     if (timer.current) clearInterval(timer.current);
@@ -124,23 +122,17 @@ export default function Home() {
     return ()=> { if (timer.current) clearInterval(timer.current); };
   }, [auto, interval, active]);
 
-  // --------- ARA butonu (tam eşleşme) ----------
+  /* ARA butonu (tam eşleşme). Boşsa CORE’a döner. */
   function doSearch() {
     const raw = (query||"").trim().toUpperCase();
-    if (!raw) {
-      setActive(adminSymbols); setInfo(""); return;
-    }
+    if (!raw) { setActive(CORE.slice()); setInfo(""); return; }
     const wanted = raw.endsWith("USDT") ? raw : `${raw}USDT`;
     const base = new Set([...(adminSymbols||[]), ...(allSymbols||[])]);
-    if (base.has(wanted)) {
-      setActive([wanted]); setInfo("");
-    } else {
-      setActive([]); setInfo(`${wanted} bulunamadı (sadece USDT perpetual & TRADING).`);
-    }
+    if (base.has(wanted)) { setActive([wanted]); setInfo(""); }
+    else { setActive([]); setInfo(`${wanted} bulunamadı (sadece USDT perpetual & TRADING).`); }
   }
   function onKey(e){ if (e.key === "Enter") doSearch(); }
 
-  // --------- Stil ---------
   const rootStyle = {
     padding: "16px 18px",
     background: darkMode ? "#0b0d14" : "#0f1320",
@@ -171,7 +163,7 @@ export default function Home() {
           Ara
         </button>
         <button
-          onClick={()=>{ setQuery(""); setActive(adminSymbols); setInfo(""); }}
+          onClick={()=>{ setQuery(""); setActive(CORE.slice()); setInfo(""); }}
           style={{padding:"8px 12px", background:"#1b2235", border:"1px solid #2e3750", borderRadius:10, color:"#fff", fontWeight:800}}
         >
           Sıfırla
@@ -207,7 +199,6 @@ export default function Home() {
 
       {/* BALİNA AKIŞI */}
       <section style={{margin:"12px 0 18px"}}>
-        {/* Eşik tutarı değiştirilebilir: bigTradeUsd */}
         <WhaleTape symbols={active} bigTradeUsd={200000} />
       </section>
 
@@ -250,7 +241,7 @@ export default function Home() {
   );
 }
 
-// ----------------- Kart bileşeni -----------------
+/* Kart bileşeni */
 function CoinCard({ sym, row }) {
   const L = row?.latest || {};
   const close = L?.close;
