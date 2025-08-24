@@ -36,16 +36,15 @@ export default function CoinPage({ symbolInit }) {
   const c  = latest?.close, e20 = latest?.ema20, r14 = latest?.rsi14;
   const bu = latest?.bbUpper, bl = latest?.bbLower, k = latest?.stochK, d = latest?.stochD;
 
-  const distEmaPct   = (c!=null&&e20!=null)?((c-e20)/e20*100):null;
   const bandPosPct   = (bu!=null&&bl!=null&&c!=null)?((c-bl)/(bu-bl)*100):null;
   const bandWidthPct = (bu!=null&&bl!=null&&c!=null)?((bu-bl)/c*100):null;
 
   const rsiLabel   = r14==null ? "—" : r14>=70 ? "Aşırı Alım" : r14<=30 ? "Aşırı Satım" : "Nötr";
   const stochLabel = (k!=null&&d!=null)?(k>d?"K>%D (yukarı)":"K<%D (aşağı)"):"—";
 
-  // --- Basit "AI Plan" (ilk sürüm): entry=close, stop=BB Alt, TP1/2/3 = 1R/2R/3R ---
+  // AI Trade Plan (ilk sürüm): entry=close, stop=BB Alt, TP'ler 1R/2R/3R
   const entryAI = c ?? null;
-  const stopAI  = (bl!=null && c!=null && bl < c) ? bl : (c!=null ? c*0.997 : null); // emniyet: 0.3% alt
+  const stopAI  = (bl!=null && c!=null && bl < c) ? bl : (c!=null ? c*0.997 : null);
   const R = (entryAI!=null && stopAI!=null) ? (entryAI - stopAI) : null;
   const tp1AI = (R!=null) ? entryAI + 1*R : null;
   const tp2AI = (R!=null) ? entryAI + 2*R : null;
@@ -56,7 +55,6 @@ export default function CoinPage({ symbolInit }) {
 
   return (
     <main style={{minHeight:"100vh", background:"#0f1115", color:"#e6e6e6", fontFamily:"system-ui"}}>
-      {/* NAV */}
       <nav style={{display:"flex", alignItems:"center", gap:16, padding:"16px 24px", borderBottom:"1px solid #23283b"}}>
         <Link href="/" style={{color:"#8bd4ff", fontWeight:700}}>Ana Sayfa</Link>
         <span style={{opacity:.7}}>›</span>
@@ -64,7 +62,6 @@ export default function CoinPage({ symbolInit }) {
         <a href={tvUrl} target="_blank" rel="noreferrer" style={{marginLeft:"auto", color:"#8bd4ff"}}>TradingView’da aç →</a>
       </nav>
 
-      {/* Kontroller */}
       <div style={{display:"flex", gap:12, flexWrap:"wrap", padding:"16px 24px"}}>
         <input value={symbol} onChange={e=>setSymbol(e.target.value.toUpperCase())}
           placeholder="BTCUSDT"
@@ -84,7 +81,6 @@ export default function CoinPage({ symbolInit }) {
 
       {err && <div style={{color:"#ffb4b4", padding:"0 24px 8px"}}>Hata: {err}</div>}
 
-      {/* Kartlar */}
       <section style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:12, padding:"0 24px 24px"}}>
         <Card title={`${symbol} (${iv})`} value={fmt(c)} sub="Son Kapanış"/>
         <Card title="EMA20" value={fmt(e20)} sub={`Fiyat/EMA: ${pct((c!=null && e20!=null)?((c-e20)/e20*100):null)}`}/>
@@ -95,7 +91,6 @@ export default function CoinPage({ symbolInit }) {
         <Card title="Bollinger Alt" value={fmt(bl)} sub={`Banttaki konum: ${pct(bandPosPct)}`}/>
       </section>
 
-      {/* Mini Grafik */}
       <section style={{padding:"0 24px 24px"}}>
         <div style={{background:"#151a2b", border:"1px solid #26304a", borderRadius:12, padding:14}}>
           <div style={{opacity:.8, marginBottom:6}}>Mini Grafik (son ~120 bar)</div>
@@ -103,7 +98,6 @@ export default function CoinPage({ symbolInit }) {
         </div>
       </section>
 
-      {/* AI Trade Plan — ilk sürüm (otomatik) */}
       <section style={{padding:"0 24px 48px"}}>
         <h3>AI Trade Plan (beta)</h3>
         <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:12}}>
@@ -112,7 +106,7 @@ export default function CoinPage({ symbolInit }) {
           <Card title="TP1" value={fmt(tp1AI)} sub="≈ 1R"/>
           <Card title="TP2" value={fmt(tp2AI)} sub="≈ 2R"/>
           <Card title="TP3" value={fmt(tp3AI)} sub="≈ 3R"/>
-          <Card title="Plan Özeti" value={rrHint} sub="Deneme sürümü — geliştirilecek"/>
+          <Card title="Plan Özeti" value={rrHint} sub="Deneme — geliştirilecek"/>
         </div>
       </section>
     </main>
