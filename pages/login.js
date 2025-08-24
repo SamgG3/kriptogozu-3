@@ -8,15 +8,11 @@ export default function LoginPage() {
   const [pw, setPw] = useState("");
   const [err, setErr] = useState("");
 
-  // DEMO doğrulama (backend yok): istediğin ID/Şifre ile giriş yap.
-  // İstersen buraya sabit kontrol koy: (id==="semih" && pw==="1234")
   function onSubmit(e) {
     e.preventDefault();
     if (!id || !pw) { setErr("ID ve şifre zorunlu"); return; }
 
     const user = { name: id, avatar: "" };
-
-    // localStorage + cookie
     localStorage.setItem("kg-auth", "1");
     localStorage.setItem("kg-user", JSON.stringify(user));
     document.cookie = "kg-auth=1; path=/; Max-Age=86400";
@@ -48,9 +44,6 @@ export default function LoginPage() {
         </button>
         <Link href="/" style={{padding:"10px 14px", border:"1px solid #2c3960", borderRadius:10, color:"#cfe6ff", textAlign:"center"}}>Ana Sayfa</Link>
       </form>
-      <p style={{opacity:.75, marginTop:12, maxWidth:520}}>
-        Not: Bu demo giriş. Gerçek doğrulama için bir backend (JWT/OAuth) bağlayabiliriz.
-      </p>
     </main>
   );
 }
