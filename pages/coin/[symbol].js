@@ -1,147 +1,107 @@
-// Coin detay: /coin/BTCUSDT gibi
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
-const INTERVALS = ["1m", "5m", "15m", "1h", "4h"];
-const fmt = (n,d=2)=> (n==null||isNaN(n))?"—":Number(n).toLocaleString("tr-TR",{minimumFractionDigits:d,maximumFractionDigits:d});
-const pct = (n,d=2)=> (n==null||isNaN(n))?"—":(n>=0?"+":"")+Number(n).toFixed(d)+"%";
+const fmtPrice = (v)=>{
+  if (v==null || isNaN(v)) return "—";
+  const a = Math.abs(v);
+  const d = a >= 100 ? 2 : a >= 1 ? 4 : 6;
+  return Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
+};
+const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
+  Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
+const pct = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
+  (v>=0?"+":"")+Number(v).toFixed(d)+"%";
 
 export default function CoinPage({ symbolInit }) {
   const [symbol, setSymbol] = useState(symbolInit || "BTCUSDT");
   const [iv, setIv] = useState("1m");
   const [latest, setLatest] = useState(null);
-  const [series, setSeries] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [auto, setAuto] = useState(true);
   const [err, setErr] = useState(null);
-  const timer = useRef(null);
 
-  async function load(){
-    try{
-      setLoading(true); setErr(null);
-      const r = await fetch(`/api/futures/indicators?symbol=${encodeURIComponent(symbol)}&interval=${iv}&limit=300&series=1`, { cache:"no-store" });
+  async function load() {
+    try {
+      setLoading(true);
+      setErr(null);
+      const r = await fetch(`/api/futures/indicators?symbol=${symbol}&interval=${iv}&limit=300&series=1`, { cache:"no-store" });
       const j = await r.json();
       setLatest(j.latest || null);
-      setSeries(j.series || null);
-    }catch(e){ setErr(String(e)); }
-    finally{ setLoading(false); }
+    } catch(e) {
+      setErr(String(e));
+    } finally {
+      setLoading(false);
+    }
   }
+
   useEffect(()=>{ load(); }, [symbol, iv]);
-  useEffect(()=>{
-    if (timer.current) clearInterval(timer.current);
-    if (auto) timer.current = window.setInterval(load, 10000);
-    return ()=> { if (timer.current) clearInterval(timer.current); };
-  }, [auto, symbol, iv]);
 
-  const c  = latest?.close, e20 = latest?.ema20, r14 = latest?.rsi14;
-  const bu = latest?.bbUpper, bl = latest?.bbLower, k = latest?.stochK, d = latest?.stochD;
+  const L = latest || {};
+  const emaDist = (L.close!=null && L.ema20!=null) ? ((L.close-L.ema20)/L.ema20*100) : null;
+  const bandPos = (L.bbUpper!=null && L.bbLower!=null && L.close!=null) ? ((L.close-L.bbLower)/(L.bbUpper-L.bbLower)*100) : null;
+  const kCross  = (L.stochK!=null && L.stochD!=null) ? (L.stochK-L.stochD) : null;
 
-  const bandPosPct   = (bu!=null&&bl!=null&&c!=null)?((c-bl)/(bu-bl)*100):null;
-  const bandWidthPct = (bu!=null&&bl!=null&&c!=null)?((bu-bl)/c*100):null;
-
-  const rsiLabel   = r14==null ? "—" : r14>=70 ? "Aşırı Alım" : r14<=30 ? "Aşırı Satım" : "Nötr";
-  const stochLabel = (k!=null&&d!=null)?(k>d?"K>%D (yukarı)":"K<%D (aşağı)"):"—";
-
-  // AI Trade Plan (ilk sürüm): entry=close, stop=BB Alt, TP'ler 1R/2R/3R
-  const entryAI = c ?? null;
-  const stopAI  = (bl!=null && c!=null && bl < c) ? bl : (c!=null ? c*0.997 : null);
-  const R = (entryAI!=null && stopAI!=null) ? (entryAI - stopAI) : null;
-  const tp1AI = (R!=null) ? entryAI + 1*R : null;
-  const tp2AI = (R!=null) ? entryAI + 2*R : null;
-  const tp3AI = (R!=null) ? entryAI + 3*R : null;
-  const rrHint = R!=null ? `R: ${fmt(R,2)} • RR: 1R/2R/3R` : "—";
-
-  const tvUrl = `https://www.tradingview.com/chart/?symbol=BINANCE:${encodeURIComponent(symbol)}`;
+  const score =
+    (emaDist!=null ? (emaDist>0 ? 1 : -1) : 0) +
+    (L.rsi14!=null ? (L.rsi14>55 ? 1 : L.rsi14<45 ? -1 : 0) : 0) +
+    (kCross!=null ? (kCross>0 ? 1 : -1) : 0);
+  const signal = score >= 2 ? "AL" : score <= -2 ? "SAT" : "NÖTR";
+  const color  = signal==="AL" ? "#20c997" : signal==="SAT" ? "#ff6b6b" : "#89a";
 
   return (
-    <main style={{minHeight:"100vh", background:"#0f1115", color:"#e6e6e6", fontFamily:"system-ui"}}>
-      <nav style={{display:"flex", alignItems:"center", gap:16, padding:"16px 24px", borderBottom:"1px solid #23283b"}}>
-        <Link href="/" style={{color:"#8bd4ff", fontWeight:700}}>Ana Sayfa</Link>
-        <span style={{opacity:.7}}>›</span>
-        <span style={{color:"#59c1ff", fontWeight:800}}>{symbol}</span>
-        <a href={tvUrl} target="_blank" rel="noreferrer" style={{marginLeft:"auto", color:"#8bd4ff"}}>TradingView’da aç →</a>
-      </nav>
-
-      <div style={{display:"flex", gap:12, flexWrap:"wrap", padding:"16px 24px"}}>
-        <input value={symbol} onChange={e=>setSymbol(e.target.value.toUpperCase())}
-          placeholder="BTCUSDT"
-          style={{padding:"10px 12px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#e6e6e6"}} />
-        <select value={iv} onChange={e=>setIv(e.target.value)}
-          style={{padding:"10px 12px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#e6e6e6"}}>
-          {INTERVALS.map(x => <option key={x} value={x}>{x}</option>)}
-        </select>
-        <button onClick={load} disabled={loading}
-          style={{padding:"10px 14px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700, cursor:"pointer"}}>
-          {loading ? "Yükleniyor..." : "Yenile"}
-        </button>
-        <label style={{display:"flex", alignItems:"center", gap:8}}>
-          <input type="checkbox" checked={auto} onChange={e=>setAuto(e.target.checked)}/> 10 sn’de bir otomatik yenile
-        </label>
+    <main style={{padding:"24px"}}>
+      <div style={{marginBottom:12}}>
+        <Link href="/" style={{color:"#8bd4ff"}}>← Ana Sayfa</Link>
       </div>
 
-      {err && <div style={{color:"#ffb4b4", padding:"0 24px 8px"}}>Hata: {err}</div>}
+      <h1 style={{color:"#8bd4ff"}}>{symbol} ({iv})</h1>
+      {loading && <div>Yükleniyor…</div>}
+      {err && <div style={{color:"red"}}>{err}</div>}
 
-      <section style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:12, padding:"0 24px 24px"}}>
-        <Card title={`${symbol} (${iv})`} value={fmt(c)} sub="Son Kapanış"/>
-        <Card title="EMA20" value={fmt(e20)} sub={`Fiyat/EMA: ${pct((c!=null && e20!=null)?((c-e20)/e20*100):null)}`}/>
-        <Card title="RSI(14)" value={fmt(r14)} sub={rsiLabel}/>
-        <Card title="StochRSI %K" value={fmt(k)} sub={stochLabel}/>
-        <Card title="StochRSI %D" value={fmt(d)} sub="3-periyot SMA"/>
-        <Card title="Bollinger Üst" value={fmt(bu)} sub={`Bant gen.: ${pct(bandWidthPct)}`}/>
-        <Card title="Bollinger Alt" value={fmt(bl)} sub={`Banttaki konum: ${pct(bandPosPct)}`}/>
-      </section>
+      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))", gap:12, marginTop:20}}>
+        <Box label="Son Kapanış" val={fmtPrice(L.close)} />
+        <Box label="EMA20" val={`${fmtPrice(L.ema20)} • ${pct(emaDist)}`} />
+        <Box label="RSI(14)" val={`${fmt(L.rsi14,2)} (${rsiInfo(L.rsi14)})`} />
+        <Box label="Stoch %K" val={fmt(L.stochK,2)} />
+        <Box label="Stoch %D" val={fmt(L.stochD,2)} />
+        <Box label="Bollinger Üst" val={fmtPrice(L.bbUpper)} />
+        <Box label="Bollinger Alt" val={fmtPrice(L.bbLower)} />
+        <Box label="Bant Konumu" val={pct(bandPos)} />
+        <Box label="AI Sinyali" val={signal} color={color} />
+      </div>
 
-      <section style={{padding:"0 24px 24px"}}>
-        <div style={{background:"#151a2b", border:"1px solid #26304a", borderRadius:12, padding:14}}>
-          <div style={{opacity:.8, marginBottom:6}}>Mini Grafik (son ~120 bar)</div>
-          <MiniChart series={series}/>
-        </div>
-      </section>
-
-      <section style={{padding:"0 24px 48px"}}>
-        <h3>AI Trade Plan (beta)</h3>
-        <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:12}}>
-          <Card title="Entry" value={fmt(entryAI)} sub="Öneri: anlık fiyat"/>
-          <Card title="Stop Loss" value={fmt(stopAI)} sub="Öneri: Bollinger Alt (yakın)"/>
-          <Card title="TP1" value={fmt(tp1AI)} sub="≈ 1R"/>
-          <Card title="TP2" value={fmt(tp2AI)} sub="≈ 2R"/>
-          <Card title="TP3" value={fmt(tp3AI)} sub="≈ 3R"/>
-          <Card title="Plan Özeti" value={rrHint} sub="Deneme — geliştirilecek"/>
+      {/* Trade Plan */}
+      <section style={{marginTop:30}}>
+        <h2>AI Trade Plan (beta)</h2>
+        <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))", gap:12}}>
+          <Box label="Entry" val={fmtPrice(L.close)} />
+          <Box label="Stop Loss" val={fmtPrice(L.bbLower)} sub="Öneri: Bollinger Alt (yakın)" />
+          <Box label="TP1" val={fmtPrice(L.close*1.0038)} sub="≈ 1R" />
+          <Box label="TP2" val={fmtPrice(L.close*1.0078)} sub="≈ 2R" />
+          <Box label="TP3" val={fmtPrice(L.close*1.0118)} sub="≈ 3R" />
+          <Box label="Plan Özeti" val="Deneme → geliştirilecek" sub="R: 1R/2R/3R" />
         </div>
       </section>
     </main>
   );
 }
 
-export function getServerSideProps({ params }) {
-  return { props: { symbolInit: params.symbol?.toUpperCase() || null } };
-}
-
-function Card({ title, value, sub }) {
+function Box({ label, val, sub, color }) {
   return (
-    <div style={{ background:"#151a2b", border:"1px solid #26304a", borderRadius:12, padding:14 }}>
-      <div style={{opacity:.8, marginBottom:6}}>{title}</div>
-      <div style={{fontSize:24, fontWeight:800}}>{value}</div>
-      <div style={{fontSize:12, opacity:.7, marginTop:6}}>{sub}</div>
+    <div style={{background:"#151a2b", border:"1px solid #26304a", borderRadius:12, padding:14}}>
+      <div style={{opacity:.8, marginBottom:4}}>{label}</div>
+      <div style={{fontWeight:800, fontSize:18, color:color||"#fff"}}>{val}</div>
+      {sub && <div style={{opacity:.6, fontSize:12}}>{sub}</div>}
     </div>
   );
 }
-function MiniChart({ series }) {
-  if (!series) return <div>Yükleniyor…</div>;
-  const { closes, ema20, bbUpper, bbLower } = series;
-  const W = 920, H = 220, P = 12;
-  const vals = [...closes, ...ema20.filter(Boolean), ...bbUpper.filter(Boolean), ...bbLower.filter(Boolean)];
-  const min = Math.min(...vals), max = Math.max(...vals);
-  const x = (i)=> P + i * ((W - 2*P) / (closes.length - 1));
-  const y = (v)=> H - P - ((v - min) / (max - min)) * (H - 2*P);
-  const path = (arr)=> arr.map((v,i)=> v==null?null:`${i===0?"M":"L"} ${x(i)} ${y(v)}`).filter(Boolean).join(" ");
-  return (
-    <svg width="100%" viewBox={`0 0 ${W} ${H}`}>
-      <path d={path(bbUpper)} stroke="#5a6b9a" fill="none" strokeWidth="1.2"/>
-      <path d={path(bbLower)} stroke="#5a6b9a" fill="none" strokeWidth="1.2"/>
-      <path d={path(ema20)}  stroke="#f2c94c" fill="none" strokeWidth="1.5"/>
-      <path d={path(closes)} stroke="#20b7ff" fill="none" strokeWidth="1.3"/>
-    </svg>
-  );
+
+function rsiInfo(r){
+  if (r==null) return "—";
+  if (r>=70) return "Aşırı Alım";
+  if (r<=30) return "Aşırı Satım";
+  return "Nötr";
 }
 
+export async function getServerSideProps({ params }) {
+  return { props: { symbolInit: params.symbol.toUpperCase() } };
+}
