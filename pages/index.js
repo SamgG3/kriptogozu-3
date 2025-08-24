@@ -1,36 +1,11 @@
 // pages/index.js
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import dynamic from "next/dynamic";
 
-// RealtimePanel'i client-only yükle
+// (ÖNEMLİ) RealtimePanel'i yalnızca client'ta render et
 const RealtimePanel = dynamic(() => import("../components/RealtimePanel"), { ssr: false });
-
-/** Yalnızca tarayıcıda render eden sarmalayıcı */
-function SafeClientOnly({ children, fallback = null }) {
-  const [ready, setReady] = useState(false);
-  useEffect(() => { setReady(true); }, []);
-  return ready ? children : fallback;
-}
-
-/** Hata olursa sayfayı düşürmek yerine mesaj gösterir */
-class ErrorBoundary extends React.Component {
-  constructor(props){ super(props); this.state = { hasError:false, err:null }; }
-  static getDerivedStateFromError(error){ return { hasError:true, err:error }; }
-  componentDidCatch(error, info){ if (typeof window !== "undefined") console.error("UI Error:", error, info); }
-  render(){
-    if(this.state.hasError){
-      return (
-        <div style={{padding:16, color:"#fca5a5"}}>
-          <b>Ön yüzde bir hata yakalandı.</b><br/>
-          Lütfen yenileyin. Sorun sürerse Realtime tabloyu geçici olarak kapatırız.
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
 
 const DEFAULTS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
 
@@ -121,16 +96,12 @@ export default function Home() {
           <div style={{opacity:.6, fontSize:12}}>Semboller: {symbols.join(", ")}</div>
         </div>
 
-        <ErrorBoundary>
-          <SafeClientOnly>
-            <RealtimePanel
-              symbols={symbols}
-              staleAfterMs={5000}
-              longShortFetchEveryMs={30000}
-              onOpenDetails={(symbol) => router.push(`/coin/${symbol}`)}
-            />
-          </SafeClientOnly>
-        </ErrorBoundary>
+        <RealtimePanel
+          symbols={symbols}
+          staleAfterMs={5000}
+          longShortFetchEveryMs={30000}
+          onOpenDetails={(symbol) => router.push(`/coin/${symbol}`)}
+        />
       </section>
 
       {/* 2) KART GÖRÜNÜMÜ */}
@@ -185,6 +156,7 @@ function CoinCard({ sym, row }) {
     </Link>
   );
 }
+
 
 
 
