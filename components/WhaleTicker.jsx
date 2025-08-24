@@ -1,21 +1,15 @@
 // components/WhaleTicker.jsx
 "use client";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 const WS = "wss://fstream.binance.com/stream";
 
-/** Çok hafif bir alt bant ticker:
- * - !forceOrder: likidasyonlar
- * - {symbols}@aggTrade: büyük işlemler (usd >= threshold)
- * - Ekranda kayan tek satır; performans için yalnızca son 30 olayı saklar.
- */
 export default function WhaleTicker({
   symbols = ["BTCUSDT","ETHUSDT","BNBUSDT"],
   bigTradeUsd = 200000,
   maxKeep = 30
 }) {
   const [queue, setQueue] = useState([]);
-  const tapeRef = useRef(null);
 
   const aggStreams = useMemo(() => {
     return symbols.slice(0,10).map(s=>`${s.toLowerCase()}@aggTrade`).join("/");
@@ -36,7 +30,6 @@ export default function WhaleTicker({
         const pkt = JSON.parse(ev.data);
         const d = pkt?.data;
 
-        // Likidasyon
         if (d && d.o && d.e === "forceOrder") {
           const o = d.o;
           const sym = String(o.s||"").toUpperCase();
@@ -47,7 +40,6 @@ export default function WhaleTicker({
           return;
         }
 
-        // Büyük İşlem
         if (d && d.e === "aggTrade") {
           const sym = String(d.s||"").toUpperCase();
           const price = Number(d.p), qty = Number(d.q);
@@ -71,7 +63,6 @@ export default function WhaleTicker({
     return ()=> { alive=false; try{ ws.close(); }catch{} };
   }, [url, bigTradeUsd, maxKeep]);
 
-  // Kuyruktan tek satır string oluştur
   const line = useMemo(()=>{
     if (!queue.length) return "Balina sinyalleri bekleniyor…";
     return queue.map(it => {
@@ -105,3 +96,4 @@ export default function WhaleTicker({
     </div>
   );
 }
+
