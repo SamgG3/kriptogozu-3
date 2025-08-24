@@ -1,5 +1,5 @@
-// /api/futures/indicators?symbol=BTCUSDT&interval=1m&limit=300
-// RSI(14), EMA(20), Bollinger(20,2) + StochRSI(14,3,3)
+// /api/futures/indicators?symbol=BTCUSDT&interval=1m&limit=300&series=1
+// RSI(14), EMA(20), Bollinger(20,2), StochRSI(14,3,3)
 function ema(values, period) {
   const k = 2 / (period + 1);
   let emaPrev = values.slice(0, period).reduce((a,b)=>a+b,0) / period;
@@ -11,18 +11,14 @@ function ema(values, period) {
   }
   return out;
 }
-
 function sma(values, period) {
-  const out = [];
-  let sum = 0;
+  const out = []; let sum = 0;
   for (let i = 0; i < values.length; i++) {
-    sum += values[i];
-    if (i >= period) sum -= values[i - period];
+    sum += values[i]; if (i >= period) sum -= values[i - period];
     out.push(i >= period - 1 ? sum / period : null);
   }
   return out;
 }
-
 function stddev(values, period) {
   const out = [];
   for (let i = 0; i < values.length; i++) {
@@ -34,13 +30,11 @@ function stddev(values, period) {
   }
   return out;
 }
-
 function rsi(values, period = 14) {
   const gains = [], losses = [];
   for (let i = 1; i < values.length; i++) {
     const d = values[i] - values[i-1];
-    gains.push(Math.max(d, 0));
-    losses.push(Math.max(-d, 0));
+    gains.push(Math.max(d, 0)); losses.push(Math.max(-d, 0));
   }
   let avgGain = gains.slice(0, period).reduce((a,b)=>a+b,0) / period;
   let avgLoss = losses.slice(0, period).reduce((a,b)=>a+b,0) / period;
@@ -51,32 +45,29 @@ function rsi(values, period = 14) {
     const rs = avgLoss === 0 ? 100 : avgGain / (avgLoss || 1e-12);
     out.push(100 - (100 / (1 + rs)));
   }
-  out.unshift(null); // uzunluk eşitle
+  out.unshift(null);
   return out;
 }
-
-// StochRSI(14, 3, 3)
+// StochRSI(14,3,3)
 function stochRsi(rsiArr, stochPeriod = 14, smoothK = 3, smoothD = 3) {
   const raw = rsiArr.map(()=>null);
   for (let i = 0; i < rsiArr.length; i++) {
     if (i < stochPeriod) continue;
     const win = rsiArr.slice(i - stochPeriod + 1, i + 1).filter(v => v != null);
     if (win.length < stochPeriod) continue;
-    const cur = rsiArr[i];
-    const min = Math.min(...win);
-    const max = Math.max(...win);
+    const cur = rsiArr[i], min = Math.min(...win), max = Math.max(...win);
     raw[i] = max === min ? 50 : ((cur - min) / (max - min)) * 100;
   }
   const k = sma(raw.map(v => v ?? 0), smoothK).map((v,i)=> raw[i]==null ? null : v);
   const d = sma(k.map(v => v ?? 0), smoothD).map((v,i)=> k[i]==null ? null : v);
   return { k, d };
 }
-
-function round(n, d=2){ return n==null ? null : Number(n).toFixed(d)*1; }
+const round = (n,d=2)=> n==null?null:Math.round(n*10**d)/10**d;
+const roundArr = (arr,d=2)=> arr.map(v=>v==null?null:round(v,d));
 
 export default async function handler(req, res) {
   try {
-    const { symbol = "BTCUSDT", interval = "1m", limit = "300" } = req.query;
+    const { symbol = "BTCUSDT", interval = "1m", limit = "300", series } = req.query;
     const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${encodeURIComponent(limit)}`;
     const r = await fetch(url, { cache: "no-store" });
     if (!r.ok) return res.status(r.status).json({ error: `Binance error ${r.status}` });
@@ -94,22 +85,40 @@ export default async function handler(req, res) {
     const { k: stochK, d: stochD } = stochRsi(rsi14, 14, 3, 3);
 
     const last = closes.length - 1;
-    return res.status(200).json({
+    const body = {
       symbol, interval, count: closes.length,
       latest: {
-        close:   round(closes[last], 2),
-        ema20:   round(ema20[last], 2),
-        sma20:   round(sma20[last], 2),
-        bbUpper: round(bbUpper[last], 2),
-        bbLower: round(bbLower[last], 2),
-        rsi14:   round(rsi14[last], 2),
-        stochK:  round(stochK[last], 2),
-        stochD:  round(stochD[last], 2),
-      },
-    });
+        close:   round(closes[last]),
+        ema20:   round(ema20[last]),
+        sma20:   round(sma20[last]),
+        bbUpper: round(bbUpper[last]),
+        bbLower: round(bbLower[last]),
+        rsi14:   round(rsi14[last]),
+        stochK:  round(stochK[last]),
+        stochD:  round(stochD[last]),
+      }
+    };
+
+    // İstenirse son 120 noktanın serisini ekle
+    if (series === "1") {
+      const take = 120;
+      const slice = (a)=> a.slice(-take);
+      body.series = {
+        closes:  roundArr(slice(closes)),
+        ema20:   roundArr(slice(ema20)),
+        bbUpper: roundArr(slice(bbUpper)),
+        bbLower: roundArr(slice(bbLower)),
+        rsi14:   roundArr(slice(rsi14)),
+        stochK:  roundArr(slice(stochK)),
+        stochD:  roundArr(slice(stochD)),
+      };
+    }
+
+    return res.status(200).json(body);
   } catch (err) {
     return res.status(500).json({ error: String(err) });
   }
 }
+
 
 
