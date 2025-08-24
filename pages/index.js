@@ -6,12 +6,12 @@ import dynamic from "next/dynamic";
 
 // Client-only bileşenler
 const RealtimePanel = dynamic(() => import("../components/RealtimePanel"), { ssr: false });
-const WhaleTape     = dynamic(() => import("../components/WhaleTape"),     { ssr: false });
+const WhaleTicker   = dynamic(() => import("../components/WhaleTicker"),   { ssr: false });
 
-/** Varsayılan çekirdek liste: sayfayı hafif tutar */
+/** Varsayılan çekirdek: sayfa hafif kalsın */
 const CORE = ["BTCUSDT","ETHUSDT","BNBUSDT"];
 
-/** Ararken referans için (admin/localStorage + katalog gelene kadar yedek) */
+/** Yedek katalog (admin/localStorage ve Binance gelene kadar) */
 const FALLBACK = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
 
 const INDICATORS_API = (sym, interval) =>
@@ -55,18 +55,18 @@ export default function Home() {
   const timer = useRef(null);
 
   // Kataloglar (arama için)
-  const [allSymbols, setAllSymbols] = useState(FALLBACK);     // Binance USDT perpetual (TRADING)
-  const [adminSymbols, setAdminSymbols] = useState(FALLBACK); // Admin/localStorage varsa
+  const [allSymbols, setAllSymbols] = useState(FALLBACK);
+  const [adminSymbols, setAdminSymbols] = useState(FALLBACK);
 
   // Aktif görünüm & veriler
-  const [active, setActive] = useState(CORE.slice()); // Varsayılan sadece BTC/ETH/BNB
+  const [active, setActive] = useState(CORE.slice());
   const [rows, setRows]     = useState({});
 
   // Arama (butonlu & tam eşleşme)
   const [query, setQuery]     = useState("");
   const [searchInfo, setInfo] = useState("");
 
-  /* Admin listesini yükle (arama referansı olarak) */
+  /* Admin listesini yükle (opsiyonel) */
   useEffect(()=>{
     if (typeof window === "undefined") return;
     try{
@@ -122,14 +122,14 @@ export default function Home() {
     return ()=> { if (timer.current) clearInterval(timer.current); };
   }, [auto, interval, active]);
 
-  /* ARA butonu (tam eşleşme). Boşsa CORE’a döner. */
+  /* ARA butonu (tam eşleşme). Boşsa CORE’a dön. */
   function doSearch() {
     const raw = (query||"").trim().toUpperCase();
     if (!raw) { setActive(CORE.slice()); setInfo(""); return; }
     const wanted = raw.endsWith("USDT") ? raw : `${raw}USDT`;
     const base = new Set([...(adminSymbols||[]), ...(allSymbols||[])]);
     if (base.has(wanted)) { setActive([wanted]); setInfo(""); }
-    else { setActive([]); setInfo(`${wanted} bulunamadı (sadece USDT perpetual & TRADING).`); }
+    else { setActive([]); setInfo(`${wanted} bulunamadı (USDT perpetual & TRADING).`); }
   }
   function onKey(e){ if (e.key === "Enter") doSearch(); }
 
@@ -139,6 +139,7 @@ export default function Home() {
     minHeight: "100vh",
     color: "#f2f4f8",
     fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+    paddingBottom: 70, // alt bant için yer
   };
 
   return (
@@ -148,7 +149,7 @@ export default function Home() {
         <h1 style={{margin:0, fontSize:22, fontWeight:900}}>KriptoGözü • Genel Panel</h1>
         <span style={{opacity:.85}}>(kartlarda AI özet • detay için tıkla)</span>
 
-        {/* Arama kutusu + butonlar */}
+        {/* Arama alanı */}
         <input
           value={query}
           onChange={e=>setQuery(e.target.value)}
@@ -186,23 +187,13 @@ export default function Home() {
         >
           Tema: {darkMode ? "Koyu" : "Daha Koyu"}
         </button>
-
-        <label style={{marginLeft:8, display:"flex", alignItems:"center", gap:8}}>
-          <input type="checkbox" checked={auto} onChange={e=>setAuto(e.target.checked)}/>
-          10 sn’de bir otomatik yenile
-        </label>
       </div>
 
       {searchInfo && (
         <div style={{marginBottom:10, color:"#ff8a8a", fontWeight:700}}>{searchInfo}</div>
       )}
 
-      {/* BALİNA AKIŞI */}
-      <section style={{margin:"12px 0 18px"}}>
-        <WhaleTape symbols={active} bigTradeUsd={200000} />
-      </section>
-
-      {/* 1) CANLI TABLO (Realtime) */}
+      {/* CANLI TABLO */}
       <section style={{marginBottom:18}}>
         <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8}}>
           <div style={{fontWeight:800, opacity:.95}}>Canlı Akış (Binance Futures)</div>
@@ -230,13 +221,16 @@ export default function Home() {
         </div>
       </section>
 
-      {/* 2) KARTLAR */}
+      {/* KARTLAR */}
       <section>
         <div style={{fontWeight:800, opacity:.95, margin:"8px 0 12px"}}>Hızlı Özet Kartları</div>
         <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(290px, 1fr))", gap:14}}>
           {active.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
         </div>
       </section>
+
+      {/* ALTTA BALİNA BANTI (globalde _app.js’de de kullanıyorsan burayı kaldırabilirsin) */}
+      <WhaleTicker symbols={active.length ? active : CORE} bigTradeUsd={200000} />
     </main>
   );
 }
@@ -284,4 +278,3 @@ function CoinCard({ sym, row }) {
     </Link>
   );
 }
-
