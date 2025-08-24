@@ -3,12 +3,18 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 /**
  * KriptoGözü – Realtime WebSocket Layer (Client-only)
- * SSR guard'lı WebSocket + localStorage
+ * Güvenli render: sayısal değerler gelmeden önce UI çökmez (guard'lı).
  */
 
 const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"];
 const WS_BASE = "wss://fstream.binance.com/stream";
 const REST_BASE = "https://fapi.binance.com";
+
+// ---------- yardımcılar ----------
+const isNum = (v) => Number.isFinite(v);
+const showNum = (v, maxFrac = 6) =>
+  isNum(v) ? v.toLocaleString(undefined, { maximumFractionDigits: maxFrac }) : "—";
+const formatPct = (n) => (isNum(n) ? `${n > 0 ? "+" : ""}${n.toFixed(2)}%` : "—");
 
 function buildCombinedStreamUrl(symbols) {
   const streams = symbols.map((s) => `${s.toLowerCase()}@miniTicker`).join("/");
@@ -16,17 +22,13 @@ function buildCombinedStreamUrl(symbols) {
 }
 
 function classifyRisk(high, low, open) {
-  if (!isFinite(open) || open <= 0) return "LOW";
+  if (!isNum(open) || open <= 0 || !isNum(high) || !isNum(low)) return "LOW";
   const rangePct = Math.abs(high - low) / open;
   if (rangePct >= 0.07) return "HIGH";
   if (rangePct >= 0.03) return "MEDIUM";
   return "LOW";
 }
-
-function formatPct(n) {
-  const sign = n > 0 ? "+" : "";
-  return `${sign}${n.toFixed(2)}%`;
-}
+// ---------------------------------
 
 function useLocalStorage(key) {
   const isClient = typeof window !== "undefined";
@@ -92,9 +94,10 @@ export default function RealtimePanel({
           const volume = Number(d.v);
           const quoteVolume = Number(d.q);
 
-          if (!isFinite(price) || !isFinite(open) || open <= 0) return;
+          // en azından price sayı değilse güncelleme yapma
+          if (!isNum(price)) return;
 
-          const changePct = ((price - open) / open) * 100;
+          const changePct = isNum(open) && open > 0 ? ((price - open) / open) * 100 : NaN;
           const riskTier = classifyRisk(high, low, open);
 
           setTickers((prev) => ({
@@ -102,18 +105,20 @@ export default function RealtimePanel({
             [symbol]: {
               symbol,
               price,
-              open,
-              high,
-              low,
-              volume,
-              quoteVolume,
-              changePct,
+              open: isNum(open) ? open : NaN,
+              high: isNum(high) ? high : NaN,
+              low: isNum(low) ? low : NaN,
+              volume: isNum(volume) ? volume : NaN,
+              quoteVolume: isNum(quoteVolume) ? quoteVolume : NaN,
+              changePct: isNum(changePct) ? changePct : NaN,
               lastUpdate: Date.now(),
               riskTier,
               longShortRatio: prev[symbol]?.longShortRatio,
             },
           }));
-        } catch { /* ignore */ }
+        } catch {
+          // JSON hatası -> yoksay
+        }
       };
 
       ws.onerror = () => {
@@ -145,6 +150,7 @@ export default function RealtimePanel({
     };
   }, [connect]);
 
+  // stale olursa yeniden bağlan
   useEffect(() => {
     const iv = setInterval(() => {
       if (status === "OPEN" && Date.now() - lastMessageTsRef.current > Math.max(staleAfterMs * 2, 10000)) {
@@ -154,6 +160,7 @@ export default function RealtimePanel({
     return () => clearInterval(iv);
   }, [status, staleAfterMs]);
 
+  // Long/Short oranı
   useEffect(() => {
     let abort = false;
     async function fetchLS(symbol) {
@@ -164,12 +171,12 @@ export default function RealtimePanel({
         const arr = await res.json();
         const last = arr?.[0];
         const ratio = last ? Number(last.longShortRatio) : NaN;
-        if (!isFinite(ratio) || abort) return;
+        if (!isNum(ratio) || abort) return;
         setTickers((prev) => ({
           ...prev,
           [symbol]: { ...prev[symbol], longShortRatio: ratio },
         }));
-      } catch { /* ignore */ }
+      } catch { /* yoksay */ }
     }
     if (typeof window === "undefined") return;
     symbols.forEach((s, i) => setTimeout(() => fetchLS(s.toUpperCase()), i * 350));
@@ -187,7 +194,9 @@ export default function RealtimePanel({
       const aFav = favSet.has(a.symbol) ? 1 : 0;
       const bFav = favSet.has(b.symbol) ? 1 : 0;
       if (aFav !== bFav) return bFav - aFav;
-      return Math.abs(b.changePct) - Math.abs(a.changePct);
+      const aAbs = isNum(a.changePct) ? Math.abs(a.changePct) : -1;
+      const bAbs = isNum(b.changePct) ? Math.abs(b.changePct) : -1;
+      return bAbs - aAbs;
     });
   }, [tickers, favSet]);
 
@@ -216,48 +225,53 @@ export default function RealtimePanel({
         </div>
 
         <div className="divide-y divide-zinc-900/50">
-          {list.map((t) => (
-            <button
-              key={t.symbol}
-              onClick={() => onOpenDetails && onOpenDetails(t.symbol)}
-              className="grid grid-cols-12 w-full items-center px-4 py-3 hover:bg-zinc-900/50 transition text-left"
-              style={{color:"#e5e7eb"}}
-            >
-              <div className="col-span-3 flex items-center gap-2">
-                <span className="font-semibold">{t.symbol}</span>
-                {isStale(t) && <StaleBadge />}
-              </div>
+          {list.map((t) => {
+            const cp = isNum(t.changePct) ? t.changePct : 0;
+            return (
+              <button
+                key={t.symbol}
+                onClick={() => onOpenDetails && onOpenDetails(t.symbol)}
+                className="grid grid-cols-12 w-full items-center px-4 py-3 hover:bg-zinc-900/50 transition text-left"
+                style={{color:"#e5e7eb"}}
+              >
+                <div className="col-span-3 flex items-center gap-2">
+                  <span className="font-semibold">{t.symbol}</span>
+                  {isStale(t) && <StaleBadge />}
+                </div>
 
-              <div className="col-span-2 text-right tabular-nums">
-                {t.price.toLocaleString(undefined, { maximumFractionDigits: 6 })}
-              </div>
+                <div className="col-span-2 text-right tabular-nums">
+                  {showNum(t.price, 6)}
+                </div>
 
-              <div className="col-span-2 text-right">
-                <span className={t.changePct > 0 ? "text-emerald-400" : t.changePct < 0 ? "text-red-400" : "text-zinc-300"}>
-                  {formatPct(t.changePct)}
-                </span>
-              </div>
+                <div className="col-span-2 text-right">
+                  <span className={cp > 0 ? "text-emerald-400" : cp < 0 ? "text-red-400" : "text-zinc-300"}>
+                    {formatPct(t.changePct)}
+                  </span>
+                </div>
 
-              <div className="col-span-2 text-center">
-                <RiskPill tier={t.riskTier} />
-              </div>
+                <div className="col-span-2 text-center">
+                  <RiskPill tier={t.riskTier} />
+                </div>
 
-              <div className="col-span-2 text-center">
-                {typeof t.longShortRatio === "number" ? (
-                  <span className={t.longShortRatio >= 1 ? "text-emerald-400" : "text-red-400"}>{t.longShortRatio.toFixed(2)}x</span>
-                ) : (
-                  <span className="text-zinc-500">—</span>
-                )}
-              </div>
+                <div className="col-span-2 text-center">
+                  {isNum(t.longShortRatio) ? (
+                    <span className={t.longShortRatio >= 1 ? "text-emerald-400" : "text-red-400"}>
+                      {t.longShortRatio.toFixed(2)}x
+                    </span>
+                  ) : (
+                    <span className="text-zinc-500">—</span>
+                  )}
+                </div>
 
-              <div className="col-span-1 flex justify-center">
-                <FavStar
-                  active={Array.isArray(favorites) && favorites.map((x)=>String(x).toUpperCase()).includes(t.symbol)}
-                  onClick={(e) => { e.stopPropagation(); toggleFavorite(t.symbol); }}
-                />
-              </div>
-            </button>
-          ))}
+                <div className="col-span-1 flex justify-center">
+                  <FavStar
+                    active={Array.isArray(favorites) && favorites.map((x)=>String(x).toUpperCase()).includes(t.symbol)}
+                    onClick={(e) => { e.stopPropagation(); toggleFavorite(t.symbol); }}
+                  />
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>
@@ -322,6 +336,7 @@ function FavStar({ active, onClick }) {
     </span>
   );
 }
+
 
 
 
