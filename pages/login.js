@@ -1,28 +1,27 @@
 // pages/login.js
 "use client";
-import React from "react";
+import React, { useState } from "react";
 import Link from "next/link";
 
 export default function LoginPage() {
-  function login() {
-    const user = { name: "Semih", avatar: "" }; // istersen avatar URL koyabilirsin
-    // localStorage
+  const [id, setId] = useState("");
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState("");
+
+  // DEMO doğrulama (backend yok): istediğin ID/Şifre ile giriş yap.
+  // İstersen buraya sabit kontrol koy: (id==="semih" && pw==="1234")
+  function onSubmit(e) {
+    e.preventDefault();
+    if (!id || !pw) { setErr("ID ve şifre zorunlu"); return; }
+
+    const user = { name: id, avatar: "" };
+
+    // localStorage + cookie
     localStorage.setItem("kg-auth", "1");
     localStorage.setItem("kg-user", JSON.stringify(user));
-    // cookie (opsiyonel ama önerilir)
     document.cookie = "kg-auth=1; path=/; Max-Age=86400";
     document.cookie = `kg-user=${encodeURIComponent(JSON.stringify(user))}; path=/; Max-Age=86400`;
-    // TopBar'a haber ver
-    window.dispatchEvent(new Event("kg-auth-changed"));
-    // Ana sayfaya dön
-    window.location.href = "/";
-  }
 
-  function logout() {
-    localStorage.removeItem("kg-auth");
-    localStorage.removeItem("kg-user");
-    document.cookie = "kg-auth=; Max-Age=0; path=/";
-    document.cookie = "kg-user=; Max-Age=0; path=/";
     window.dispatchEvent(new Event("kg-auth-changed"));
     window.location.href = "/";
   }
@@ -30,18 +29,28 @@ export default function LoginPage() {
   return (
     <main style={{minHeight:"100vh", background:"#0f1320", color:"#e6f0ff", padding:24}}>
       <h1 style={{marginTop:0}}>Giriş</h1>
-      <div style={{display:"flex", gap:12}}>
-        <button onClick={login}
+      <form onSubmit={onSubmit} style={{display:"grid", gap:12, maxWidth:360}}>
+        <input
+          value={id} onChange={e=>setId(e.target.value)}
+          placeholder="Kullanıcı ID"
+          style={{padding:"10px 12px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1"}}
+        />
+        <input
+          type="password"
+          value={pw} onChange={e=>setPw(e.target.value)}
+          placeholder="Şifre"
+          style={{padding:"10px 12px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1"}}
+        />
+        {err && <div style={{color:"#ff8a8a", fontWeight:700}}>{err}</div>}
+        <button type="submit"
           style={{padding:"10px 14px", background:"#1e2a44", border:"1px solid #2c3960", borderRadius:10, color:"#fff", fontWeight:800}}>
           Giriş Yap
         </button>
-        <button onClick={logout}
-          style={{padding:"10px 14px", background:"#2a334e", border:"1px solid #3a4670", borderRadius:10, color:"#fff", fontWeight:800}}>
-          Çıkış Yap
-        </button>
-        <Link href="/" style={{padding:"10px 14px", border:"1px solid #2c3960", borderRadius:10, color:"#cfe6ff"}}>Ana Sayfa</Link>
-      </div>
-      <p style={{opacity:.8, marginTop:12}}>“Giriş Yap”a bastıktan sonra üstte **Giriş** yazısı kaybolmalı ve **profil** görünmeli.</p>
+        <Link href="/" style={{padding:"10px 14px", border:"1px solid #2c3960", borderRadius:10, color:"#cfe6ff", textAlign:"center"}}>Ana Sayfa</Link>
+      </form>
+      <p style={{opacity:.75, marginTop:12, maxWidth:520}}>
+        Not: Bu demo giriş. Gerçek doğrulama için bir backend (JWT/OAuth) bağlayabiliriz.
+      </p>
     </main>
   );
 }
