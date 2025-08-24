@@ -1,7 +1,7 @@
 // components/RealtimePanel.jsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-/** Client-only realtime tablo (inline-style, Tailwind yok) */
+/** Client-only realtime tablo (inline-style, Tailwind yok, güvenli render) */
 
 const WS_BASE = "wss://fstream.binance.com/stream";
 const REST_BASE = "https://fapi.binance.com";
@@ -266,6 +266,7 @@ export default function RealtimePanel({
     </div>
   );
 }
+
 
 
 
