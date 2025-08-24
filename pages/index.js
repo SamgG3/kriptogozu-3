@@ -7,7 +7,11 @@ import dynamic from "next/dynamic";
 // RealtimePanel'i sadece client'ta çalıştır
 const RealtimePanel = dynamic(() => import("../components/RealtimePanel"), { ssr: false });
 
-const DEFAULTS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
+const INDICATORS_API = (sym, interval) =>
+  `/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`;
+
+const MAX_RESULTS = 12; // tabloda en fazla bu kadar sembol göster
+const FALLBACK = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
 
 const fmtPrice = (v)=>{
   if (v==null || isNaN(v)) return "—";
@@ -21,7 +25,7 @@ const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
 
 function biasFromLatest(L){
   if(!L) return { longPct:50, shortPct:50, score:0 };
-  const close=L.close, ema=L.ema20, rsi=L.rsi14, k=L.stochK, d=L.stochD, bu=L.bbUpper, bl=L.bbLower;
+  const close=L?.close, ema=L?.ema20, rsi=L?.rsi14, k=L?.stochK, d=L?.stochD, bu=L?.bbUpper, bl=L?.bbLower;
   const emaDist = (close!=null && ema!=null) ? ((close-ema)/ema*100) : null;
   const kCross  = (k!=null && d!=null) ? (k-d) : null;
   const bandPos = (bu!=null && bl!=null && close!=null) ? ((close-bl)/(bu-bl)*100) : null;
@@ -39,37 +43,71 @@ function biasFromLatest(L){
 export default function Home() {
   const router = useRouter();
 
-  // Tema, arama ve veri durumları
+  // Tema & arama & veri durumları
   const [darkMode, setDarkMode] = useState(false);
   const [query, setQuery] = useState("");
-  const [symbols] = useState(DEFAULTS);
+
+  // Kataloglar
+  const [allSymbols, setAllSymbols] = useState(FALLBACK);   // Binance USDT perpetual katalog
+  const [adminSymbols, setAdminSymbols] = useState(FALLBACK); // admin localStorage listesi (varsa)
+
+  // Görünüm & veri
   const [interval, setIntervalStr] = useState("1m");
   const [rows, setRows] = useState({});
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
   const timer = useRef(null);
 
-  // Arama filtresi
+  // 1) Admin listesi (varsayılan görünüm olarak kullan)
+  useEffect(()=>{
+    if (typeof window === "undefined") return;
+    try{
+      const raw = localStorage.getItem("kg-admin-symbols");
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr.length) {
+          setAdminSymbols(Array.from(new Set(arr.map(s=>String(s).toUpperCase()))));
+        }
+      }
+    }catch{}
+  },[]);
+
+  // 2) Binance USDT Futures katalog (TRADING) — client'ta çekiyoruz
+  useEffect(()=>{
+    let stop=false;
+    async function pull(){
+      try{
+        const r = await fetch("https://fapi.binance.com/fapi/v1/exchangeInfo", { cache:"no-store" });
+        const j = await r.json();
+        const syms = (j?.symbols||[])
+          .filter(s => s?.contractType==="PERPETUAL" && s?.status==="TRADING" && /USDT$/.test(s?.symbol||""))
+          .map(s => s.symbol.toUpperCase());
+        if (!stop && syms.length) setAllSymbols(Array.from(new Set(syms)));
+      }catch{}
+    }
+    pull();
+    return ()=>{ stop=true; };
+  },[]);
+
+  // 3) Arama filtresi (admin listesi + tüm katalog)
   const filtered = useMemo(()=>{
     const q = query.trim().toUpperCase();
-    if (!q) return symbols;
-    return symbols.filter(s => s.includes(q));
-  }, [query, symbols]);
+    const base = Array.from(new Set([...adminSymbols, ...allSymbols])); // admin öncelikli birleşik
+    if (!q) return base.slice(0, MAX_RESULTS);
 
-  const rootStyle = {
-    padding: "16px 18px",
-    background: darkMode ? "#0b0d14" : "#0f1320",
-    minHeight: "100vh",
-    color: "#f2f4f8",
-    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial",
-  };
+    // baştaki eşleşmelere öncelik ver, sonra içerenler
+    const starts = base.filter(s => s.startsWith(q));
+    const contains = base.filter(s => !s.startsWith(q) && s.includes(q));
+    return [...starts, ...contains].slice(0, MAX_RESULTS);
+  }, [query, adminSymbols, allSymbols]);
 
+  // 4) Veri çekme
   async function load(list = filtered) {
     try {
       setLoading(true);
       const res = await Promise.all(
         list.map(sym =>
-          fetch(`/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`, { cache:"no-store" })
+          fetch(INDICATORS_API(sym, interval), { cache:"no-store" })
             .then(r=>r.ok ? r.json() : null)
             .catch(()=>null)
         )
@@ -87,6 +125,14 @@ export default function Home() {
     return ()=> { if (timer.current) clearInterval(timer.current); };
   }, [auto, interval, filtered]);
 
+  const rootStyle = {
+    padding: "16px 18px",
+    background: darkMode ? "#0b0d14" : "#0f1320",
+    minHeight: "100vh",
+    color: "#f2f4f8",
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+  };
+
   return (
     <main style={rootStyle}>
       {/* ÜST BAR */}
@@ -98,8 +144,8 @@ export default function Home() {
         <input
           value={query}
           onChange={e=>setQuery(e.target.value)}
-          placeholder="Sembol ara (örn: BTC, ETH, DOGE)"
-          style={{padding:"8px 12px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1", minWidth:220}}
+          placeholder="Sembol ara (örn: BTC, ETH, OP, TAO, SEI...)"
+          style={{padding:"8px 12px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1", minWidth:260}}
         />
 
         <select value={interval} onChange={e=>setIntervalStr(e.target.value)}
@@ -130,7 +176,9 @@ export default function Home() {
       <section style={{marginBottom:18}}>
         <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8}}>
           <div style={{fontWeight:800, opacity:.95}}>Canlı Akış (Binance Futures)</div>
-          <div style={{opacity:.75, fontSize:12}}>Semboller: {filtered.join(", ") || "—"}</div>
+          <div style={{opacity:.75, fontSize:12}}>
+            Semboller: {filtered.join(", ") || "—"}
+          </div>
         </div>
 
         <div style={{border:"1px solid #232a3d", borderRadius:14, overflow:"hidden", background:"#0f1320"}}>
@@ -156,7 +204,7 @@ export default function Home() {
       <section>
         <div style={{fontWeight:800, opacity:.95, margin:"8px 0 12px"}}>Hızlı Özet Kartları</div>
         <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(290px, 1fr))", gap:14}}>
-          {(filtered.length? filtered : symbols).map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
+          {filtered.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
         </div>
       </section>
     </main>
@@ -205,3 +253,4 @@ function CoinCard({ sym, row }) {
     </Link>
   );
 }
+
