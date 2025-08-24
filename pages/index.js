@@ -284,3 +284,4 @@ function CoinCard({ sym, row }) {
     </Link>
   );
 }
+
