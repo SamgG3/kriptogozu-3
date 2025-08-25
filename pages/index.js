@@ -1,109 +1,128 @@
 // pages/index.js
-import React, { useMemo, useState, useEffect } from 'react'
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 
-// DİKKAT: pages/ dizininden components/ ve lib/ dizinine gidiş 1 seviye: ../
-import TPSLPanel from '../components/TPSLPanel'
-import TrendBadge from '../components/TrendBadge'
-import Notifications from '../components/Notifications'
-import { findSR } from '../lib/sr'                 // findSR: İngilizce "i"
-import { generateSignalFromOHLC } from '../lib/signals'
+const DEFAULTS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
 
-export default function HomePage(){
-  const symbol = 'BTCUSDT'
-  const REFRESH_MS = 3000
+const fmtPrice = (v)=>{
+  if (v==null || isNaN(v)) return "—";
+  const a = Math.abs(v);
+  const d = a >= 100 ? 2 : a >= 1 ? 4 : 6;
+  return Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
+};
+const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
+  Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
+const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
 
-  const [ohlc, setOhlc] = useState([])
-  const [price, setPrice] = useState(0)
-  const [decimals, setDecimals] = useState(2)
-  const [signals, setSignals] = useState([])
+function biasFromLatest(L){
+  if(!L) return { longPct:50, shortPct:50, score:0 };
+  const close=L.close, ema=L.ema20, rsi=L.rsi14, k=L.stochK, d=L.stochD, bu=L.bbUpper, bl=L.bbLower;
+  const emaDist = (close!=null && ema!=null) ? ((close-ema)/ema*100) : null;
+  const kCross  = (k!=null && d!=null) ? (k-d) : null;
+  const bandPos = (bu!=null && bl!=null && close!=null) ? ((close-bl)/(bu-bl)*100) : null;
+  const nEMA   = emaDist==null ? 0 : clamp(emaDist/3, -1, 1);
+  const nRSI   = rsi==null ? 0 : clamp((rsi-50)/25, -1, 1);
+  const nKxD   = kCross==null ? 0 : clamp(kCross/50, -1, 1);
+  const nBand  = bandPos==null ? 0 : clamp((bandPos-50)/30, -1, 1);
+  const wEMA=0.35, wRSI=0.30, wKxD=0.20, wBand=0.15;
+  const score = (wEMA*nEMA + wRSI*nRSI + wKxD*nKxD + wBand*nBand);
+  const longPct = Math.round( (score+1)/2 * 100 );
+  const shortPct = 100 - longPct;
+  return { longPct, shortPct, score };
+}
 
-  // Fiyat/ohlc çek
+export default function Home() {
+  const [symbols, setSymbols] = useState(DEFAULTS);
+  const [interval, setIntervalStr] = useState("1m");
+  const [rows, setRows] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [auto, setAuto] = useState(true);
+  const timer = useRef(null);
+
+  async function load() {
+    try {
+      setLoading(true);
+      const res = await Promise.all(
+        symbols.map(sym =>
+          fetch(`/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`, { cache:"no-store" })
+            .then(r=>r.json())
+            .catch(()=>null)
+        )
+      );
+      const map = {};
+      symbols.forEach((sym, i)=> map[sym] = res[i]);
+      setRows(map);
+    } finally { setLoading(false); }
+  }
+
+  useEffect(()=>{ load(); }, [interval, symbols]);
   useEffect(()=>{
-    async function load(){
-      const r = await fetch(`/api/futures/price?symbol=${symbol}`)
-      const data = await r.json()
-      const arr = Array.isArray(data.ohlc) ? data.ohlc : []
-      setOhlc(arr)
-
-      const p = Number(data.price ?? (arr.length ? arr[arr.length - 1].close : 0))
-      setPrice(p)
-
-      const d = typeof data.priceDecimals === 'number' ? data.priceDecimals : (p >= 1 ? 2 : 6)
-      setDecimals(d)
-    }
-    load()
-    const id = setInterval(load, REFRESH_MS)
-    return () => clearInterval(id)
-  }, [symbol])
-
-  // S/R seviyeleri
-  const levels = useMemo(() => findSR(ohlc, 200), [ohlc])
-
-  // AI sinyaller → Bildirimler
-  useEffect(()=>{
-    const id = setInterval(()=>{
-      if (!ohlc.length) return
-      const s = generateSignalFromOHLC(ohlc)
-      if (s) setSignals(prev => [{ ...s, symbol }, ...prev].slice(0, 50))
-    }, REFRESH_MS)
-    return () => clearInterval(id)
-  }, [ohlc, symbol])
+    if (timer.current) clearInterval(timer.current);
+    if (auto) timer.current = setInterval(load, 9000); // 9 sn
+    return ()=> clearInterval(timer.current);
+  }, [auto, interval, symbols]);
 
   return (
-    <div className="max-w-6xl mx-auto p-4 md:grid md:grid-cols-[2fr,1fr] md:gap-6">
-      {/* SOL: Coin Detayları */}
-      <section className="space-y-6">
-        <div>
-          <div className="text-lg font-semibold">{symbol}</div>
-          <div className="text-neutral-400">
-            Fiyat: <b className="text-neutral-200">{Number(price).toFixed(decimals)}</b>
-          </div>
+    <main style={{padding:"16px 18px"}}>
+      <div style={{display:"flex", gap:12, alignItems:"center", marginBottom:12, flexWrap:"wrap"}}>
+        <h1 style={{margin:0, fontSize:20}}>KriptoGözü • Genel Panel</h1>
+        <select value={interval} onChange={e=>setIntervalStr(e.target.value)}
+          style={{padding:"8px 10px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#e6e6e6", marginLeft:10}}>
+          {["1m","5m","15m","1h","4h"].map(x=><option key={x} value={x}>{x}</option>)}
+        </select>
+        <button onClick={load} disabled={loading}
+          style={{padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700}}>
+          {loading? "Yükleniyor…" : "Yenile"}
+        </button>
+        <label style={{marginLeft:8, display:"flex", alignItems:"center", gap:8}}>
+          <input type="checkbox" checked={auto} onChange={e=>setAuto(e.target.checked)}/>
+          9 sn’de bir otomatik yenile
+        </label>
+      </div>
+
+      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))", gap:12}}>
+        {symbols.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
+      </div>
+    </main>
+  );
+}
+
+function CoinCard({ sym, row }) {
+  const L = row?.latest || {};
+  const close = L.close;
+
+  const { longPct, shortPct } = biasFromLatest(L);
+  const signal = longPct >= 55 ? "AL" : shortPct >= 55 ? "SAT" : "NÖTR";
+  const color  = signal === "AL" ? "#20c997" : signal === "SAT" ? "#ff6b6b" : "#89a";
+  const border = signal === "AL" ? "#1f7a4f" : signal === "SAT" ? "#7a2e2e" : "#2a2f45";
+
+  return (
+    <Link href={`/coin/${sym}`} style={{ textDecoration:"none" }}>
+      <div style={{
+        background:"#151a2b",
+        border:`1px solid ${border}`,
+        borderRadius:12,
+        padding:14,
+        display:"grid",
+        gridTemplateColumns:"1fr auto",
+        alignItems:"center",
+        gap:10,
+        minHeight:86
+      }}>
+        <div style={{display:"grid", gap:4}}>
+          <div style={{fontWeight:800, fontSize:18, color:"#8bd4ff"}}>{sym}</div>
+          <div style={{opacity:.85}}>Son Fiyat: <b>{fmtPrice(close)}</b></div>
         </div>
-
-        {/* TP/SL (S/R’den) */}
-        <TPSLPanel price={price} priceDecimals={decimals} levels={levels} />
-
-        {/* Destek / Direnç */}
-        <div className="grid grid-cols-2 gap-8 mt-2">
-          <div>
-            <div className="text-[11px] text-neutral-400 mb-1">Destek</div>
-            {levels
-              .filter(l => l.kind === 'support')
-              .sort((a, b) => b.price - a.price)
-              .slice(0, 4)
-              .map((s, i) => (
-                <div key={i} className="flex items-center justify-between text-sm">
-                  <span className="text-neutral-300">{s.price.toFixed(decimals)}</span>
-                  <span className="text-[11px] text-neutral-500">güç {s.strength}/5</span>
-                </div>
-              ))}
+        <div style={{textAlign:"right"}}>
+          <div style={{fontWeight:800, color}}>{signal}</div>
+          <div style={{opacity:.9, marginTop:4}}>
+            <span style={{color:"#20c997", fontWeight:700}}>Long {fmt(longPct,0)}%</span>
+            <span style={{opacity:.7}}> / </span>
+            <span style={{color:"#ff6b6b", fontWeight:700}}>Short {fmt(shortPct,0)}%</span>
           </div>
-          <div>
-            <div className="text-[11px] text-neutral-400 mb-1">Direnç</div>
-            {levels
-              .filter(l => l.kind === 'resistance')
-              .sort((a, b) => a.price - b.price)
-              .slice(0, 4)
-              .map((r, i) => (
-                <div key={i} className="flex items-center justify-between text-sm">
-                  <span className="text-neutral-300">{r.price.toFixed(decimals)}</span>
-                  <span className="text-[11px] text-neutral-500">güç {r.strength}/5</span>
-                </div>
-              ))}
-          </div>
+          <div style={{opacity:.6, fontSize:12, marginTop:6}}>Tıkla → detay</div>
         </div>
-
-        {/* Trend kırılım + uyarı */}
-        <TrendBadge ohlc={ohlc} priceDecimals={decimals} />
-        <p className="mt-2 text-[11px] text-neutral-400">
-          Otomatik S/R & trend hesaplaması kullanılır — <span className="underline">yanılma payı vardır</span>.
-        </p>
-      </section>
-
-      {/* SAĞ: Bildirimler */}
-      <aside className="mt-6 md:mt-0">
-        <Notifications items={signals} />
-      </aside>
-    </div>
-  )
+      </div>
+    </Link>
+  );
 }
