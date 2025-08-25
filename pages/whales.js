@@ -13,7 +13,7 @@ const TIERS = [
 export default function WhalesPage(){
   const [tab, setTab] = useState("BTC");
   const [query, setQuery] = useState("");
-  const [searched, setSearched] = useState(""); // geçerli sembol
+  const [searched, setSearched] = useState("");
 
   const searchedSymbol = useMemo(()=>{
     const raw = (searched||"").trim().toUpperCase();
