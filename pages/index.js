@@ -7,7 +7,7 @@ import { findSR } from '../../lib/sr'
 import { generateSignalFromOHLC } from '../../lib/signals'
 
 export default function CoinPage(){
-  const symbol = 'BTCUSDT'          // İstersen sabit; ya da kendi sembol akışına bağlayabilirsin.
+  const symbol = 'BTCUSDT'
   const REFRESH_MS = 3000
 
   const [ohlc, setOhlc] = useState([])
@@ -19,14 +19,11 @@ export default function CoinPage(){
     async function load(){
       const r = await fetch(`/api/futures/price?symbol=${symbol}`)
       const data = await r.json()
-      setOhlc(Array.isArray(data.ohlc) ? data.ohlc : [])
-      const p = Number(data.price ?? 0)
+      const arr = Array.isArray(data.ohlc) ? data.ohlc : []
+      setOhlc(arr)
+      const p = Number(data.price || (arr.length ? arr[arr.length-1].close : 0))
       setPrice(p)
-      // backend priceDecimals yoksa mantıklı bir varsayım:
-      const d = typeof data.priceDecimals === 'number'
-        ? data.priceDecimals
-        : (p >= 1 ? 2 : 6)
-      setDecimals(d)
+      setDecimals(typeof data.priceDecimals === 'number' ? data.priceDecimals : (p >= 1 ? 2 : 6))
     }
     load()
     const id = setInterval(load, REFRESH_MS)
@@ -46,10 +43,36 @@ export default function CoinPage(){
 
   return (
     <div className="max-w-6xl mx-auto p-4 md:grid md:grid-cols-[2fr,1fr] md:gap-6">
-      {/* SOL */}
       <section className="space-y-6">
         <div>
           <div className="text-lg font-semibold">{symbol}</div>
           <div className="text-neutral-400">
             Fiyat: <b className="text-neutral-200">{Number(price).toFixed(decimals)}</b>
-          <
+          </div>
+        </div>
+
+        <TPSLPanel price={price} priceDecimals={decimals} levels={levels} />
+
+        <div className="grid grid-cols-2 gap-8 mt-2">
+          <div>
+            <div className="text-[11px] text-neutral-400 mb-1">Destek</div>
+            {levels.filter(l=>l.kind==='support').sort((a,b)=>b.price-a.price).slice(0,4).map((s,i)=>(
+              <div key={i} className="flex items-center justify-between text-sm">
+                <span className="text-neutral-300">{s.price.toFixed(decimals)}</span>
+                <span className="text-[11px] text-neutral-500">güç {s.strength}/5</span>
+              </div>
+            ))}
+          </div>
+          <div>
+            <div className="text-[11px] text-neutral-400 mb-1">Direnç</div>
+            {levels.filter(l=>l.kind==='resistance').sort((a,b)=>a.price-b.price).slice(0,4).map((r,i)=>(
+              <div key={i} className="flex items-center justify-between text-sm">
+                <span className="text-neutral-300">{r.price.toFixed(decimals)}</span>
+                <span className="text-[11px] text-neutral-500">güç {r.strength}/5</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <TrendBadge ohlc={ohlc} priceDecimals={decimals} />
+        <p cla
