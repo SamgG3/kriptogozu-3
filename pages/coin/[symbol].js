@@ -1,28 +1,25 @@
 // pages/coin/[symbol].js
-import { useEffect, useState } from "react";
-import Link from "next/link";
+"use client";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/router";
 
-const fmtPrice = (v)=>{
-  if (v==null || isNaN(v)) return "—";
-  const a = Math.abs(v);
-  const d = a >= 100 ? 2 : a >= 1 ? 4 : 6;
-  return Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
-};
-const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
-  Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
-const pct = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
-  (v>=0?"+":"")+Number(v).toFixed(d)+"%";
+const INDICATORS_API = (sym, interval, limit=300) =>
+  `/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=${limit}`;
+
+const TI = [
+  { g:"Dakika", vals:["1m","3m","5m","15m","30m"] },
+  { g:"Saat",   vals:["1h","2h","3h","4h"] },
+  { g:"Gün",    vals:["1d","3d"] },
+  { g:"Hafta",  vals:["1w","3w"] },
+  { g:"Ay",     vals:["1M","3M","6M","12M"] },
+];
+
+const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" : Number(v).toLocaleString("tr-TR",{maximumFractionDigits:d});
 const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
 
-function rsiInfo(r){
-  if (r==null) return "—";
-  if (r>=70) return "Aşırı Alım";
-  if (r<=30) return "Aşırı Satım";
-  return "Nötr";
-}
-function biasFromLatest(L){
+function bias(L){
   if(!L) return { longPct:50, shortPct:50, score:0 };
-  const close=L.close, ema=L.ema20, rsi=L.rsi14, k=L.stochK, d=L.stochD, bu=L.bbUpper, bl=L.bbLower;
+  const close=L?.close, ema=L?.ema20, rsi=L?.rsi14, k=L?.stochK, d=L?.stochD, bu=L?.bbUpper, bl=L?.bbLower;
   const emaDist = (close!=null && ema!=null) ? ((close-ema)/ema*100) : null;
   const kCross  = (k!=null && d!=null) ? (k-d) : null;
   const bandPos = (bu!=null && bl!=null && close!=null) ? ((close-bl)/(bu-bl)*100) : null;
@@ -32,108 +29,147 @@ function biasFromLatest(L){
   const nBand  = bandPos==null ? 0 : clamp((bandPos-50)/30, -1, 1);
   const wEMA=0.35, wRSI=0.30, wKxD=0.20, wBand=0.15;
   const score = (wEMA*nEMA + wRSI*nRSI + wKxD*nKxD + wBand*nBand);
-  const longPct = Math.round( (score+1)/2 * 100 );
-  const shortPct = 100 - longPct;
+  const longPct = Math.round( (score+1)/2 * 100 ); const shortPct = 100 - longPct;
   return { longPct, shortPct, score };
 }
 
-export default function CoinPage({ symbolInit }) {
-  const [symbol, setSymbol] = useState(symbolInit || "BTCUSDT");
-  const [iv, setIv] = useState("1m");
-  const [latest, setLatest] = useState(null);
+export default function CoinDetail(){
+  const router = useRouter();
+  const sym = useMemo(()=> String(router.query.symbol||"").toUpperCase(), [router.query.symbol]);
+
+  const [sel, setSel] = useState("1m");
+  const [rows, setRows] = useState({});
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
+  const timer = useRef(null);
 
-  async function load() {
+  async function load(intervals = TI.flatMap(x=>x.vals)) {
+    if (!sym) return;
+    setLoading(true);
     try {
-      setLoading(true);
-      setErr(null);
-      const r = await fetch(`/api/futures/indicators?symbol=${symbol}&interval=${iv}&limit=300&series=1`, { cache:"no-store" });
-      const j = await r.json();
-      setLatest(j.latest || null);
-    } catch(e) {
-      setErr(String(e));
-    } finally {
-      setLoading(false);
-    }
+      const res = await Promise.all(intervals.map(v =>
+        fetch(INDICATORS_API(sym, v, 200), { cache:"no-store" })
+          .then(r=>r.ok ? r.json() : null).catch(()=>null)
+      ));
+      const map = {}; intervals.forEach((v,i)=> map[v]=res[i]); setRows(map);
+    } finally { setLoading(false); }
   }
-  useEffect(()=>{ load(); }, [symbol, iv]);
 
-  const L = latest || {};
-  const emaDist = (L.close!=null && L.ema20!=null) ? ((L.close-L.ema20)/L.ema20*100) : null;
-  const bandPos = (L.bbUpper!=null && L.bbLower!=null && L.close!=null) ? ((L.close-L.bbLower)/(L.bbUpper-L.bbLower)*100) : null;
+  useEffect(()=>{ if(sym) load(); }, [sym]);
+  useEffect(()=>{
+    if (timer.current) clearInterval(timer.current);
+    timer.current = setInterval(()=>load([sel]), 3000); // 3 sn
+    return ()=> clearInterval(timer.current);
+  }, [sym, sel]);
 
-  const { longPct, shortPct } = biasFromLatest(L);
-  const biasSignal = longPct>=55 ? "AL" : shortPct>=55 ? "SAT" : "NÖTR";
-  const color  = biasSignal==="AL" ? "#20c997" : biasSignal==="SAT" ? "#ff6b6b" : "#89a";
+  // AI benzeri yorum (sadece oran/sinyal, yönlendirme yok)
+  const latest = rows[sel]?.latest || null;
+  const { longPct, shortPct } = bias(latest);
+  const signal = longPct >= 55 ? "AL lehine" : shortPct >= 55 ? "SAT lehine" : "NÖTR";
 
-  let entry = L.close, stop = null, tp1=null, tp2=null, tp3=null;
-  if (biasSignal==="AL" && L.bbLower!=null) {
-    const R = entry - L.bbLower; stop = L.bbLower; tp1 = entry + R; tp2 = entry + 2*R; tp3 = entry + 3*R;
-  } else if (biasSignal==="SAT" && L.bbUpper!=null) {
-    const R = L.bbUpper - entry; stop = L.bbUpper; tp1 = entry - R; tp2 = entry - 2*R; tp3 = entry - 3*R;
-  }
+  // Hacim ve “anlık al/sat” göstergesi: son bar hacmi + son agg qty (veri kaynağına bağlı, burada bar hacmi)
+  const vol = latest?.volume;
 
   return (
-    <main style={{padding:"24px"}}>
-      <div style={{marginBottom:12}}>
-        <Link href="/" legacyBehavior><a style={{color:"#8bd4ff"}}>← Ana Sayfa</a></Link>
+    <main style={{padding:"12px 14px", background:"#0f1320", minHeight:"100vh", color:"#e5ecff", fontSize:14}}>
+      <h1 style={{margin:"4px 0 12px", fontSize:18, fontWeight:900}}>{sym} • Detay</h1>
+
+      {/* Zaman aralığı seçimi */}
+      <div style={{display:"flex", gap:8, flexWrap:"wrap", marginBottom:10}}>
+        {TI.map(gr=>(
+          <div key={gr.g} style={{display:"flex", alignItems:"center", gap:6, background:"#141a2a", padding:"6px 8px", borderRadius:10}}>
+            <b style={{opacity:.9}}>{gr.g}</b>
+            {gr.vals.map(v=>(
+              <button key={v} onClick={()=>setSel(v)}
+                style={{padding:"4px 8px", borderRadius:8, border:"1px solid #2b3758",
+                        background: sel===v ? "#1c2742" : "transparent", color:"#dbe4ff", cursor:"pointer"}}>
+                {v}
+              </button>
+            ))}
+          </div>
+        ))}
       </div>
 
-      <div style={{display:"flex", gap:12, alignItems:"center"}}>
-        <h1 style={{color:"#8bd4ff", margin:0}}>{symbol}</h1>
-        <select value={iv} onChange={e=>setIv(e.target.value)}
-          style={{padding:"6px 10px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#e6e6e6"}}>
-          {["1m","5m","15m","1h","4h"].map(x=><option key={x} value={x}>{x}</option>)}
-        </select>
-        <span style={{marginLeft:"auto", fontWeight:800, color}}>
-          {biasSignal} • Long {longPct}% / Short {shortPct}%
-        </span>
-      </div>
-
-      {loading && <div>Yükleniyor…</div>}
-      {err && <div style={{color:"red"}}>{err}</div>}
-
-      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))", gap:12, marginTop:20}}>
-        <Box label="Son Kapanış" val={fmtPrice(L.close)} />
-        <Box label="EMA20" val={`${fmtPrice(L.ema20)} • ${pct(emaDist)}`} />
-        <Box label="RSI(14)" val={fmt(L.rsi14,2)} />
-        <Box label="Stoch %K" val={fmt(L.stochK,2)} />
-        <Box label="Stoch %D" val={fmt(L.stochD,2)} />
-        <Box label="Bollinger Üst" val={fmtPrice(L.bbUpper)} />
-        <Box label="Bollinger Alt" val={fmtPrice(L.bbLower)} />
-        <Box label="Bant Konumu" val={pct(bandPos)} />
-        <Box label="Long %" val={`${fmt(longPct,0)}%`} />
-        <Box label="Short %" val={`${fmt(shortPct,0)}%`} />
-      </div>
-
-      <section style={{marginTop:30}}>
-        <h2>AI Trade Plan (beta)</h2>
-        <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))", gap:12}}>
-          <Box label="Yön" val={biasSignal} />
-          <Box label="Entry" val={fmtPrice(entry)} />
-          <Box label="Stop Loss" val={fmtPrice(stop)} />
-          <Box label="TP1" val={fmtPrice(tp1)} />
-          <Box label="TP2" val={fmtPrice(tp2)} />
-          <Box label="TP3" val={fmtPrice(tp3)} />
-        </div>
+      {/* Hızlı kartlar (yazılar küçük) */}
+      <section style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px,1fr))", gap:10, marginBottom:12}}>
+        <MiniCard title="Sinyal ağırlığı" value={signal} sub={`Long ${longPct}% / Short ${shortPct}%`} />
+        <MiniCard title="Son Fiyat" value={fmt(latest?.close, 6)} sub={`EMA20 mesafe: ${fmt(((latest?.close - latest?.ema20)/latest?.ema20)*100,2)}%`} />
+        <MiniCard title="RSI14" value={fmt(latest?.rsi14, 2)} sub="50 üstü momentum lehine" />
+        <MiniCard title="Hacim (bar)" value={fmt(vol,2)} sub="Anlık al/sat baskısı için referans" />
       </section>
+
+      {/* Destek/Direnç & TP seviyeleri — basit otomatik hesap (deneme) */}
+      <SupportResist sym={sym} rows={rows} sel={sel} />
+
+      {/* AI-vari yorum (yatırım tavsiyesi DEĞİL) */}
+      <div style={{marginTop:12, border:"1px solid #25304a", borderRadius:12, padding:12, background:"#0f1628"}}>
+        <div style={{fontWeight:900, marginBottom:6}}>Al Trade Plan (beta)</div>
+        <div style={{opacity:.95}}>
+          Bu bölüm yalnızca **oran/sinyal** bilgi verir; <b>admin dışındakilere “gir/çık” önermez</b>.
+          {signal==="NÖTR"
+            ? <> Şu an denge bulunuyor. EMA20 mesafesi ve RSI14 birlikte nötr bölgede. Kırılım beklemek mantıklı olabilir.</>
+            : signal.includes("AL")
+              ? <> Long lehine eğilim var. RSI50 üstü, EMA20 üstü ise momentum uyumu görülür. Riske atılabilecek bölge ve pozisyon büyüklüğü tamamıyla kullanıcının tercihidir.</>
+              : <> Short lehine eğilim var. RSI50 altı, EMA20 altı ise zayıflık teyit edilir. Bu bir yönlendirme değildir.</>
+          }
+        </div>
+      </div>
     </main>
   );
 }
 
-function Box({ label, val, sub, color }) {
+function MiniCard({ title, value, sub }){
   return (
-    <div style={{background:"#151a2b", border:"1px solid #26304a", borderRadius:12, padding:14}}>
-      <div style={{opacity:.8, marginBottom:4}}>{label}</div>
-      <div style={{fontWeight:800, fontSize:18, color:color||"#fff"}}>{val??"—"}</div>
-      {sub && <div style={{opacity:.6, fontSize:12}}>{sub}</div>}
+    <div style={{border:"1px solid #25304a", borderRadius:12, padding:10, background:"#0f1628"}}>
+      <div style={{opacity:.8, fontSize:12}}>{title}</div>
+      <div style={{fontWeight:900, fontSize:16}}>{value}</div>
+      {sub && <div style={{opacity:.7, fontSize:12, marginTop:4}}>{sub}</div>}
     </div>
   );
 }
 
-export async function getServerSideProps({ params }) {
-  return { props: { symbolInit: params.symbol.toUpperCase() } };
+/** Basit SR + TP tahmini (deneme):
+ * - Son X bar high/low → yerel zirve/dip’lerden iki seviye seç
+ * - TP1/TP2/TP3, en yakın direnç/ destek referans alınarak 0 ile bitmeyen yuvarlama
+ */
+function SupportResist({ sym, rows, sel }){
+  const arr = rows[sel]?.rows || [];
+  const last = rows[sel]?.latest || {};
+  const highs = arr.map(r=>r.high).filter(v=>v!=null);
+  const lows  = arr.map(r=>r.low ).filter(v=>v!=null);
+  highs.sort((a,b)=>b-a); lows.sort((a,b)=>a-b);
+
+  const res1 = highs[0], res2 = highs[5] ?? highs[1];
+  const sup1 = lows[0],  sup2 = lows[5]  ?? lows[1];
+
+  function roundNice(x){
+    if (!x || isNaN(x)) return "—";
+    // "hep 0'la bitiyor" olmasın diye, dinamik basamaklı yuvarlama
+    const a = Math.abs(x);
+    const d = a>=100 ? 2 : a>=1 ? 3 : 5;
+    return Number(x).toLocaleString("tr-TR",{maximumFractionDigits:d});
+  }
+
+  // TP’ler: mevcut fiyata göre en yakın seviyelerden türetme (sadece gösterim)
+  const close = last?.close;
+  const tps = [];
+  if (close && res1) tps.push({name:"TP1", val: res1});
+  if (close && res2) tps.push({name:"TP2", val: res2});
+  if (close && res2 && res1) tps.push({name:"TP3", val: res2 + (res1-res2)*0.618 });
+
+  return (
+    <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(240px,1fr))", gap:10}}>
+      <MiniCard title="Destek" value={roundNice(sup1)} sub={`İkincil: ${roundNice(sup2)}`} />
+      <MiniCard title="Direnç" value={roundNice(res1)} sub={`İkincil: ${roundNice(res2)}`} />
+      <div style={{border:"1px solid #25304a", borderRadius:12, padding:10, background:"#0f1628"}}>
+        <div style={{opacity:.8, fontSize:12}}>TP (deneme, SR tabanlı)</div>
+        <div style={{display:"grid", gap:4}}>
+          {tps.length ? tps.map(tp=>(
+            <div key={tp.name} style={{display:"flex", justifyContent:"space-between"}}>
+              <b>{tp.name}</b><span>{roundNice(tp.val)}</span>
+            </div>
+          )) : <span style={{opacity:.7}}>Veri yetersiz…</span>}
+        </div>
+      </div>
+    </div>
+  );
 }
-
-
