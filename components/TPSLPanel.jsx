@@ -2,9 +2,9 @@
 import React from 'react'
 import { tpsFromSR, slFromSR } from '../lib/sr'
 
-const fmt = (v, d=2) => (v==null ? '-' : v.toFixed(d))
+const fmt = (v, d=2) => (v==null ? '-' : Number(v).toFixed(d))
 
-export default function TPSLPanel({ price, priceDecimals=2, levels }) {
+export default function TPSLPanel({ price, priceDecimals=2, levels=[] }) {
   const longTP  = tpsFromSR('long',  price, levels)
   const shortTP = tpsFromSR('short', price, levels)
   const longSL  = slFromSR('long',  price, levels)
