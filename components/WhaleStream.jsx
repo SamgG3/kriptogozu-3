@@ -4,47 +4,53 @@ import React, { useEffect, useMemo, useState } from "react";
 
 const WS = "wss://fstream.binance.com/stream";
 
+/** Diziyi parça parça kır (batch) */
+function chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
 /**
  * Tek listede balina akışı (likidasyon + büyük işlem).
  * - symbols: izlenecek USDT perpetual sembolleri (örn. ["BTCUSDT","ETHUSDT"])
  * - minUsd: eşik (varsayılan 200k)
  * - maxKeep: listede tutulacak maksimum kayıt
+ * - batchSize: tek WS bağlantısında kaç sembol (varsayılan 50)
+ *
+ * Not: Çok sayıda sembolde çalışmak için sembolleri batch'lere bölüp
+ * birden fazla websocket açıyoruz. "!forceOrder" stream'ini sadece ilk WS'e ekliyoruz.
  */
 export default function WhaleStream({
   symbols = ["BTCUSDT"],
   minUsd = 200_000,
-  maxKeep = 200,
+  maxKeep = 500,
+  batchSize = 50
 }) {
   const [rows, setRows] = useState([]);
 
-  // aggTrade streamlerini sembollere göre birleştir
-  const aggStreams = useMemo(
-    () => symbols.slice(0, 50).map(s => `${s.toLowerCase()}@aggTrade`).join("/"),
-    [symbols]
-  );
+  const cleanSymbols = useMemo(() => {
+    // Normalleştir ve tekrarları at
+    const set = new Set((symbols || []).map(s => String(s || "").toUpperCase().trim()).filter(Boolean));
+    return Array.from(set);
+  }, [symbols]);
 
-  // !forceOrder (likidasyon) + aggTrade (büyük işlem) birlikte
-  const url = useMemo(
-    () => `${WS}?streams=${["!forceOrder", aggStreams].filter(Boolean).join("/")}`,
-    [aggStreams]
-  );
+  const batches = useMemo(() => chunk(cleanSymbols, batchSize), [cleanSymbols, batchSize]);
 
   useEffect(() => {
+    if (!cleanSymbols.length) return;
     let alive = true;
-    const ws = new WebSocket(url);
+    const sockets = [];
 
-    ws.onmessage = (ev) => {
-      if (!alive) return;
+    function handleData(d) {
       try {
-        const msg = JSON.parse(ev.data);
-        const d = msg?.data;
         let sym, side, usd, kind;
 
         // Likidasyonlar
         if (d && d.e === "forceOrder" && d.o) {
           const o = d.o;
           sym  = String(o.s || "").toUpperCase();
-          if (!symbols.includes(sym)) return; // sadece seçilenler
+          if (!cleanSymbols.includes(sym)) return;
           side = o.S === "BUY" ? "Long Lik." : "Short Lik.";
           usd  = Number(o.ap) * Number(o.q);
           kind = "liq";
@@ -55,7 +61,7 @@ export default function WhaleStream({
         // Büyük işlemler (aggTrade)
         if (d && d.e === "aggTrade") {
           sym  = String(d.s || "").toUpperCase();
-          if (!symbols.includes(sym)) return; // sadece seçilenler
+          if (!cleanSymbols.includes(sym)) return;
           const price = Number(d.p);
           const qty   = Number(d.q);
           usd  = price * qty;
@@ -65,7 +71,7 @@ export default function WhaleStream({
           return;
         }
       } catch {}
-    };
+    }
 
     function push(item) {
       setRows(prev => {
@@ -75,11 +81,37 @@ export default function WhaleStream({
       });
     }
 
-    return () => { alive = false; try { ws.close(); } catch {} };
-  }, [url, symbols, minUsd, maxKeep]);
+    // Her batch için ayrı WS
+    batches.forEach((batch, idx) => {
+      const aggStreams = batch.map(s => `${s.toLowerCase()}@aggTrade`).join("/");
+      const streams = [];
+      if (idx === 0) streams.push("!forceOrder"); // forceOrder sadece ilk WS'te
+      if (aggStreams) streams.push(aggStreams);
+      if (!streams.length) return;
+
+      const url = `${WS}?streams=${streams.join("/")}`;
+      const ws = new WebSocket(url);
+      sockets.push(ws);
+
+      ws.onmessage = (ev) => {
+        if (!alive) return;
+        try {
+          const msg = JSON.parse(ev.data);
+          const d = msg?.data;
+          if (d) handleData(d);
+        } catch {}
+      };
+      ws.onerror = () => {}; // sessiz
+    });
+
+    return () => {
+      alive = false;
+      sockets.forEach(ws => { try { ws.close(); } catch {} });
+    };
+  }, [batches, cleanSymbols, minUsd, maxKeep]);
 
   return (
-    <div style={{border:"1px solid #25304a", borderRadius:12, overflow:"hidden", background:"#0f1320"}}>
+    <div style={{borderTop:"1px solid #25304a"}}>
       <Header />
       <div style={{maxHeight: 520, overflowY:"auto"}}>
         {rows.length === 0 && (
@@ -94,7 +126,7 @@ export default function WhaleStream({
 function Header(){
   return (
     <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr",
-                 padding:"10px 12px", background:"#151b2c", color:"#cfe2ff", fontWeight:800}}>
+                 padding:"10px 12px", background:"#101626", color:"#cfe2ff", fontWeight:800}}>
       <div>Zaman</div>
       <div>Sembol</div>
       <div>Taraf</div>
