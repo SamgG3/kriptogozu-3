@@ -12,8 +12,11 @@ export default function MyApp({ Component, pageProps }) {
       <PriceBar />
       <TopBar />
       <Component {...pageProps} />
-      {/* Balina akışı kapalı; bant sadece yazı akar */}
-      <WhaleTicker enabled={false} staticText="KriptoGözü • canlı veri • hoş geldiniz" />
+      {/* Bant sadece metin akar (sürat aynı kalır) */}
+      <WhaleTicker
+        enabled={false}
+        staticText="--- Tanrının Gözü - Kriptonun Gözü --- Bu kanalda paylaşılanlar SPK kuralları gereğince KESİNLİKLE yatırım tavsiyesi niteliğinde değildir."
+      />
     </>
   );
 }
