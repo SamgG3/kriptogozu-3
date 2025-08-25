@@ -22,9 +22,11 @@ export default function CoinDynamicPage(){
     async function load(){
       const r = await fetch(`/api/futures/price?symbol=${symbol}`)
       const data = await r.json()
-      setOhlc(data.ohlc || [])
-      setPrice(data.price ?? 0)
-      setDecimals(data.priceDecimals ?? 2)
+      setOhlc(Array.isArray(data.ohlc) ? data.ohlc : [])
+      const p = Number(data.price ?? 0)
+      setPrice(p)
+      const d = typeof data.priceDecimals === 'number' ? data.priceDecimals : (p >= 1 ? 2 : 6)
+      setDecimals(d)
     }
     load()
     const id = setInterval(load, REFRESH_MS)
