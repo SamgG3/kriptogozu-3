@@ -173,3 +173,4 @@ function SupportResist({ sym, rows, sel }){
     </div>
   );
 }
+
