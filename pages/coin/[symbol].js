@@ -9,7 +9,7 @@ import { generateSignalFromOHLC } from '../../lib/signals'
 
 export default function CoinDynamicPage(){
   const router = useRouter()
-  const symbol = (router.query.symbol || 'BTCUSDT').toString().toUpperCase()
+  const symbol = ((router.query.symbol || 'BTCUSDT') + '').toUpperCase()
   const REFRESH_MS = 3000
 
   const [ohlc, setOhlc] = useState([])
@@ -18,22 +18,24 @@ export default function CoinDynamicPage(){
   const [signals, setSignals] = useState([])
 
   useEffect(()=>{
-    if (!symbol) return
     async function load(){
       const r = await fetch(`/api/futures/price?symbol=${symbol}`)
       const data = await r.json()
-      setOhlc(Array.isArray(data.ohlc) ? data.ohlc : [])
-      const p = Number(data.price ?? 0)
+      const arr = Array.isArray(data.ohlc) ? data.ohlc : []
+      setOhlc(arr)
+
+      const p = Number(data.price ?? (arr.length ? arr[arr.length - 1].close : 0))
       setPrice(p)
+
       const d = typeof data.priceDecimals === 'number' ? data.priceDecimals : (p >= 1 ? 2 : 6)
       setDecimals(d)
     }
     load()
     const id = setInterval(load, REFRESH_MS)
-    return ()=>clearInterval(id)
+    return () => clearInterval(id)
   }, [symbol])
 
-  const levels = useMemo(()=> findSR(ohlc, 200), [ohlc])
+  const levels = useMemo(() => findSR(ohlc, 200), [ohlc])
 
   useEffect(()=>{
     const id = setInterval(()=>{
@@ -41,7 +43,7 @@ export default function CoinDynamicPage(){
       const s = generateSignalFromOHLC(ohlc)
       if (s) setSignals(prev => [{ ...s, symbol }, ...prev].slice(0, 50))
     }, REFRESH_MS)
-    return ()=>clearInterval(id)
+    return () => clearInterval(id)
   }, [ohlc, symbol])
 
   return (
@@ -59,7 +61,7 @@ export default function CoinDynamicPage(){
         <div className="grid grid-cols-2 gap-8 mt-2">
           <div>
             <div className="text-[11px] text-neutral-400 mb-1">Destek</div>
-            {(levels.filter(l=>l.kind==='support').sort((a,b)=>b.price-a.price).slice(0,4)).map((s,i)=>(
+            {levels.filter(l=>l.kind==='support').sort((a,b)=>b.price-a.price).slice(0,4).map((s,i)=>(
               <div key={i} className="flex items-center justify-between text-sm">
                 <span className="text-neutral-300">{s.price.toFixed(decimals)}</span>
                 <span className="text-[11px] text-neutral-500">güç {s.strength}/5</span>
@@ -68,7 +70,7 @@ export default function CoinDynamicPage(){
           </div>
           <div>
             <div className="text-[11px] text-neutral-400 mb-1">Direnç</div>
-            {(levels.filter(l=>l.kind==='resistance').sort((a,b)=>a.price-b.price).slice(0,4)).map((r,i)=>(
+            {levels.filter(l=>l.kind==='resistance').sort((a,b)=>a.price-b.price).slice(0,4).map((r,i)=>(
               <div key={i} className="flex items-center justify-between text-sm">
                 <span className="text-neutral-300">{r.price.toFixed(decimals)}</span>
                 <span className="text-[11px] text-neutral-500">güç {r.strength}/5</span>
