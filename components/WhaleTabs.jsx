@@ -8,9 +8,9 @@ const WS = "wss://fstream.binance.com/stream";
 export default function WhaleTabs({
   symbols = ["BTCUSDT","ETHUSDT","BNBUSDT"],
   tiers = [
-    { key:"t1", label:"$500k – $1M", min: 500_000, max: 1_000_000 },
-    { key:"t2", label:"$1M – $5M",   min: 1_000_000, max: 5_000_000 },
-    { key:"t3", label:"$5M+",        min: 5_000_000, max: Infinity },
+    { key:"t1", label:"$200k – $1M",  min: 200_000,  max: 1_000_000 },
+    { key:"t2", label:"$1M – $5M",    min: 1_000_000, max: 5_000_000 },
+    { key:"t3", label:"$5M+",         min: 5_000_000, max: Infinity  },
   ]
 }) {
   const [tab, setTab] = useState("t1");
@@ -45,7 +45,7 @@ export default function WhaleTabs({
         });
       } catch {}
     };
-    return ()=> { alive=false; try{ ws.close(); }catch{} };
+    return ()=> { try{ ws.close(); }catch{} alive=false; };
   }, [url, tiers]);
 
   return (
@@ -87,4 +87,3 @@ function Row({ it }){
     </div>
   );
 }
-
