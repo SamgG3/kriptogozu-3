@@ -31,8 +31,7 @@ export default function TopBar() {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    setState(readAuth());
-    setReady(true);
+    setState(readAuth()); setReady(true);
     const onStorage = (e) => { if (["kg-auth","kg-user"].includes(e.key)) setState(readAuth()); };
     const onVisible = () => setState(readAuth());
     const onAuthChanged = () => setState(readAuth());
@@ -60,7 +59,7 @@ export default function TopBar() {
 
   return (
     <header style={{
-      position:"sticky", top:0, zIndex:50,
+      position:"sticky", top:0, zIndex:60,
       background:"#0b0f1a", borderBottom:"1px solid #1c2438",
       padding:"10px 16px", display:"flex", alignItems:"center", justifyContent:"space-between"
     }}>
@@ -75,42 +74,54 @@ export default function TopBar() {
         </nav>
       </div>
 
-      {!isAuthed ? (
-        <Link
-          href="/login"
-          style={{
-            padding:"8px 12px", background:"#1e2a44", border:"1px solid #2c3960",
-            borderRadius:10, color:"#e6f0ff", fontWeight:800, textDecoration:"none"
-          }}
-        >
-          Giriş
-        </Link>
-      ) : (
-        <div style={{display:"flex", alignItems:"center", gap:10}}>
-          <div style={{
-            width:32, height:32, borderRadius:"50%", background:"#1e2a44",
-            display:"grid", placeItems:"center", overflow:"hidden", border:"1px solid #2c3960"
-          }}>
-            {user?.avatar
-              ? <img src={user.avatar} alt="avatar" style={{width:"100%", height:"100%"}}/>
-              : <span style={{fontSize:14, color:"#cfe6ff", fontWeight:800}}>
-                  {String(user?.name||"U").slice(0,1).toUpperCase()}
-                </span>
-            }
-          </div>
-          <span style={{color:"#cfe6ff", fontWeight:800}}>{user?.name || "Kullanıcı"}</span>
+      <div style={{display:"flex", alignItems:"center", gap:8}}>
+        {/* TR/EN toggler (placeholder) */}
+        <button title="Dil (TR/EN)" style={{padding:"6px 10px", background:"#16213a", border:"1px solid #24325a", borderRadius:8, color:"#cfe6ff", fontWeight:800, cursor:"default"}}>
+          TR / EN
+        </button>
 
-          <button
-            onClick={logout}
-            style={{
-              marginLeft:6, padding:"6px 10px", background:"#2a334e", border:"1px solid #3a4670",
-              borderRadius:8, color:"#fff", fontWeight:800, cursor:"pointer"
-            }}
-          >
-            Çıkış
-          </button>
-        </div>
-      )}
+        {!isAuthed ? (
+          <>
+            <Link
+              href="/login"
+              style={{ padding:"8px 12px", background:"#1e2a44", border:"1px solid #2c3960",
+                       borderRadius:10, color:"#e6f0ff", fontWeight:800, textDecoration:"none" }}>
+              Giriş
+            </Link>
+            {/* Kayıt Ol placeholder */}
+            <button
+              title="Yakında"
+              style={{ padding:"8px 12px", background:"#233055", border:"1px solid #2e3c66",
+                       borderRadius:10, color:"#d1defc", fontWeight:800, cursor:"default" }}>
+              Kayıt Ol
+            </button>
+          </>
+        ) : (
+          <div style={{display:"flex", alignItems:"center", gap:10}}>
+            <div style={{
+              width:32, height:32, borderRadius:"50%", background:"#1e2a44",
+              display:"grid", placeItems:"center", overflow:"hidden", border:"1px solid #2c3960"
+            }}>
+              {user?.avatar
+                ? <img src={user.avatar} alt="avatar" style={{width:"100%", height:"100%"}}/>
+                : <span style={{fontSize:14, color:"#cfe6ff", fontWeight:800}}>
+                    {String(user?.name||"U").slice(0,1).toUpperCase()}
+                  </span>
+              }
+            </div>
+            <span style={{color:"#cfe6ff", fontWeight:800}}>{user?.name || "Kullanıcı"}</span>
+            <button
+              onClick={logout}
+              style={{
+                marginLeft:6, padding:"6px 10px", background:"#2a334e", border:"1px solid #3a4670",
+                borderRadius:8, color:"#fff", fontWeight:800, cursor:"pointer"
+              }}
+            >
+              Çıkış
+            </button>
+          </div>
+        )}
+      </div>
     </header>
   );
 }
