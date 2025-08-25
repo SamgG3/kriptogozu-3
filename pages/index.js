@@ -4,28 +4,14 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import dynamic from "next/dynamic";
 
-// Client-only bileşenler
 const RealtimePanel = dynamic(() => import("../components/RealtimePanel"), { ssr: false });
-const WhaleTicker   = dynamic(() => import("../components/WhaleTicker"),   { ssr: false });
 
-/** Varsayılan çekirdek: sayfa hafif kalsın */
 const CORE = ["BTCUSDT","ETHUSDT","BNBUSDT"];
-
-/** Yedek katalog (admin/localStorage ve Binance gelene kadar) */
 const FALLBACK = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT"];
+const INDICATORS_API = (sym, interval) => `/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`;
 
-const INDICATORS_API = (sym, interval) =>
-  `/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`;
-
-/* helpers */
-const fmtPrice = (v)=>{
-  if (v==null || isNaN(v)) return "—";
-  const a = Math.abs(v);
-  const d = a >= 100 ? 2 : a >= 1 ? 4 : 6;
-  return Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
-};
-const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
-  Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
+const fmtPrice = (v)=> v==null||isNaN(v) ? "—" : Number(v).toLocaleString("tr-TR",{maximumFractionDigits: v>=100?2:v>=1?4:6});
+const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" : Number(v).toLocaleString("tr-TR",{maximumFractionDigits:d});
 const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
 function biasFromLatest(L){
   if(!L) return { longPct:50, shortPct:50, score:0 };
@@ -39,49 +25,24 @@ function biasFromLatest(L){
   const nBand  = bandPos==null ? 0 : clamp((bandPos-50)/30, -1, 1);
   const wEMA=0.35, wRSI=0.30, wKxD=0.20, wBand=0.15;
   const score = (wEMA*nEMA + wRSI*nRSI + wKxD*nKxD + wBand*nBand);
-  const longPct = Math.round( (score+1)/2 * 100 );
-  const shortPct = 100 - longPct;
+  const longPct = Math.round( (score+1)/2 * 100 ); const shortPct = 100 - longPct;
   return { longPct, shortPct, score };
 }
 
 export default function Home() {
   const router = useRouter();
-
-  // Tema & görünüm
-  const [darkMode, setDarkMode] = useState(false);
   const [interval, setIntervalStr] = useState("1m");
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
   const timer = useRef(null);
 
-  // Kataloglar (arama için)
   const [allSymbols, setAllSymbols] = useState(FALLBACK);
-  const [adminSymbols, setAdminSymbols] = useState(FALLBACK);
-
-  // Aktif görünüm & veriler
   const [active, setActive] = useState(CORE.slice());
   const [rows, setRows]     = useState({});
 
-  // Arama (butonlu & tam eşleşme)
   const [query, setQuery]     = useState("");
   const [searchInfo, setInfo] = useState("");
 
-  /* Admin listesini yükle (opsiyonel) */
-  useEffect(()=>{
-    if (typeof window === "undefined") return;
-    try{
-      const raw = localStorage.getItem("kg-admin-symbols");
-      if (raw) {
-        const arr = JSON.parse(raw);
-        if (Array.isArray(arr) && arr.length) {
-          const uniq = Array.from(new Set(arr.map(s=>String(s).toUpperCase())));
-          setAdminSymbols(uniq);
-        }
-      }
-    }catch{}
-  },[]);
-
-  /* Binance katalog (USDT, PERPETUAL, TRADING) */
   useEffect(()=>{
     let stop=false;
     async function pull(){
@@ -94,81 +55,50 @@ export default function Home() {
         if (!stop && syms.length) setAllSymbols(Array.from(new Set(syms)));
       }catch{}
     }
-    pull();
-    return ()=>{ stop=true; };
+    pull(); return ()=>{ stop=true; };
   },[]);
 
-  /* Veri çekme */
   async function load(list = active) {
     if (!list || !list.length) { setRows({}); return; }
     try {
       setLoading(true);
-      const res = await Promise.all(
-        list.map(sym =>
-          fetch(INDICATORS_API(sym, interval), { cache:"no-store" })
-            .then(r=>r.ok ? r.json() : null)
-            .catch(()=>null)
-        )
-      );
-      const map = {};
-      list.forEach((sym, i)=> map[sym] = res[i]);
-      setRows(map);
+      const res = await Promise.all(list.map(sym =>
+        fetch(INDICATORS_API(sym, interval), { cache:"no-store" })
+          .then(r=>r.ok ? r.json() : null)
+          .catch(()=>null)
+      ));
+      const map = {}; list.forEach((sym,i)=> map[sym]=res[i]); setRows(map);
     } finally { setLoading(false); }
   }
   useEffect(()=>{ load(active); }, [interval, active]);
   useEffect(()=>{
     if (timer.current) clearInterval(timer.current);
-    if (auto) timer.current = setInterval(()=>load(active), 10000);
+    if (auto) timer.current = setInterval(()=>load(active), 9000); // 9 sn
     return ()=> { if (timer.current) clearInterval(timer.current); };
   }, [auto, interval, active]);
 
-  /* ARA butonu (tam eşleşme). Boşsa CORE’a dön. */
   function doSearch() {
     const raw = (query||"").trim().toUpperCase();
     if (!raw) { setActive(CORE.slice()); setInfo(""); return; }
     const wanted = raw.endsWith("USDT") ? raw : `${raw}USDT`;
-    const base = new Set([...(adminSymbols||[]), ...(allSymbols||[])]);
+    const base = new Set([...(allSymbols||[])]);
     if (base.has(wanted)) { setActive([wanted]); setInfo(""); }
     else { setActive([]); setInfo(`${wanted} bulunamadı (USDT perpetual & TRADING).`); }
   }
   function onKey(e){ if (e.key === "Enter") doSearch(); }
 
-  const rootStyle = {
-    padding: "16px 18px",
-    background: darkMode ? "#0b0d14" : "#0f1320",
-    minHeight: "100vh",
-    color: "#f2f4f8",
-    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial",
-    paddingBottom: 70, // alt bant için yer
-  };
-
   return (
-    <main style={rootStyle}>
+    <main style={{padding:"16px 18px", background:"#0f1320", minHeight:"100vh", color:"#f2f4f8", paddingBottom:70}}>
       {/* ÜST BAR */}
       <div style={{display:"flex", gap:12, alignItems:"center", marginBottom:12, flexWrap:"wrap"}}>
         <h1 style={{margin:0, fontSize:22, fontWeight:900}}>KriptoGözü • Genel Panel</h1>
-        <span style={{opacity:.85}}>(kartlarda AI özet • detay için tıkla)</span>
+        <span style={{opacity:.85}}>(kartlarda yalnızca oran/sinyal, yatırım tavsiyesi **DEĞİL**)</span>
 
-        {/* Arama alanı */}
-        <input
-          value={query}
-          onChange={e=>setQuery(e.target.value)}
-          onKeyDown={onKey}
+        <input value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={onKey}
           placeholder="Sembol yaz (BTC veya BTCUSDT)"
-          style={{padding:"8px 12px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1", minWidth:240}}
-        />
-        <button
-          onClick={doSearch}
-          style={{padding:"8px 12px", background:"#2152a3", border:"1px solid #2e5fb6", borderRadius:10, color:"#fff", fontWeight:800}}
-        >
-          Ara
-        </button>
-        <button
-          onClick={()=>{ setQuery(""); setActive(CORE.slice()); setInfo(""); }}
-          style={{padding:"8px 12px", background:"#1b2235", border:"1px solid #2e3750", borderRadius:10, color:"#fff", fontWeight:800}}
-        >
-          Sıfırla
-        </button>
+          style={{padding:"8px 12px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1", minWidth:240}}/>
+        <button onClick={doSearch} style={{padding:"8px 12px", background:"#2152a3", border:"1px solid #2e5fb6", borderRadius:10, color:"#fff", fontWeight:800}}>Ara</button>
+        <button onClick={()=>{ setQuery(""); setActive(CORE.slice()); setInfo(""); }} style={{padding:"8px 12px", background:"#1b2235", border:"1px solid #2e3750", borderRadius:10, color:"#fff", fontWeight:800}}>Sıfırla</button>
 
         <select value={interval} onChange={e=>setIntervalStr(e.target.value)}
           style={{padding:"8px 10px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1"}}>
@@ -179,36 +109,24 @@ export default function Home() {
           style={{padding:"8px 12px", background:"#1b2235", border:"1px solid #2e3750", borderRadius:10, color:"#fff", fontWeight:800}}>
           {loading? "Yükleniyor…" : "Yenile"}
         </button>
-
-        <button
-          onClick={() => setDarkMode(v=>!v)}
-          style={{ padding:"8px 12px", background:"#2a2f45", border:"1px solid #3a4360",
-                   borderRadius:10, color:"#fff", fontWeight:800 }}
-        >
-          Tema: {darkMode ? "Koyu" : "Daha Koyu"}
-        </button>
       </div>
 
-      {searchInfo && (
-        <div style={{marginBottom:10, color:"#ff8a8a", fontWeight:700}}>{searchInfo}</div>
-      )}
+      {searchInfo && <div style={{marginBottom:10, color:"#ff8a8a", fontWeight:700}}>{searchInfo}</div>}
 
       {/* CANLI TABLO */}
       <section style={{marginBottom:18}}>
         <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8}}>
           <div style={{fontWeight:800, opacity:.95}}>Canlı Akış (Binance Futures)</div>
-          <div style={{opacity:.75, fontSize:12}}>
-            Semboller: {active.join(", ") || "—"}
-          </div>
+          <div style={{opacity:.75, fontSize:12}}>Semboller: {active.join(", ") || "—"}</div>
         </div>
 
         <div style={{border:"1px solid #232a3d", borderRadius:14, overflow:"hidden", background:"#0f1320"}}>
-          <div style={{display:"grid", gridTemplateColumns:"3fr 2fr 2fr 2fr 2fr 1fr", padding:"10px 12px", fontWeight:700, background:"#151b2c", color:"#dbe4ff"}}>
+          <div style={{display:"grid", gridTemplateColumns:"3fr 2fr 1.6fr 2fr 2fr 1fr", padding:"10px 12px", fontWeight:700, background:"#151b2c", color:"#dbe4ff"}}>
             <div>Sembol</div>
             <div style={{textAlign:"right"}}>Fiyat</div>
+            <div style={{textAlign:"center"}}>Long/Short</div>
             <div style={{textAlign:"right"}}>24s Değişim</div>
             <div style={{textAlign:"center"}}>Risk</div>
-            <div style={{textAlign:"center"}}>Long/Short</div>
             <div style={{textAlign:"center"}}>⭐</div>
           </div>
 
@@ -217,6 +135,13 @@ export default function Home() {
             staleAfterMs={5000}
             longShortFetchEveryMs={30000}
             onOpenDetails={(symbol) => router.push(`/coin/${symbol}`)}
+            // Not: RealtimePanel içinde long/short %’lere göre yeşil/kırmızı nokta render etmeyi kolaylaştırmak için
+            renderLongShort={(longPct, shortPct)=>(
+              <div style={{display:"flex", alignItems:"center", justifyContent:"center", gap:8}}>
+                <Dot color="#22d39a" on={longPct>=50} label={`L ${fmt(longPct,0)}%`} />
+                <Dot color="#ff6b6b" on={shortPct>=50} label={`S ${fmt(shortPct,0)}%`} />
+              </div>
+            )}
           />
         </div>
       </section>
@@ -228,14 +153,23 @@ export default function Home() {
           {active.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
         </div>
       </section>
-
-      {/* ALTTA BALİNA BANTI (globalde _app.js’de de kullanıyorsan burayı kaldırabilirsin) */}
-      <WhaleTicker symbols={active.length ? active : CORE} bigTradeUsd={200000} />
     </main>
   );
 }
 
-/* Kart bileşeni */
+function Dot({ color="#22d39a", on=false, label="" }){
+  return (
+    <div style={{display:"flex", alignItems:"center", gap:6}}>
+      <span style={{
+        width:10, height:10, borderRadius:"50%",
+        background: on? color : "transparent",
+        border: `2px solid ${color}`, boxShadow: on? `0 0 8px ${color}` : "none"
+      }}/>
+      <span style={{opacity:.9}}>{label}</span>
+    </div>
+  );
+}
+
 function CoinCard({ sym, row }) {
   const L = row?.latest || {};
   const close = L?.close;
@@ -251,13 +185,8 @@ function CoinCard({ sym, row }) {
         <div style={{
           background:"linear-gradient(180deg, #0f1320, #0c111b)",
           border:`1px solid ${border}`,
-          borderRadius:14,
-          padding:16,
-          display:"grid",
-          gridTemplateColumns:"1fr auto",
-          alignItems:"center",
-          gap:10,
-          minHeight:96,
+          borderRadius:14, padding:16,
+          display:"grid", gridTemplateColumns:"1fr auto", alignItems:"center", gap:10, minHeight:96,
           boxShadow:"0 6px 18px rgba(0,0,0,.35)"
         }}>
           <div style={{display:"grid", gap:6}}>
