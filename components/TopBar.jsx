@@ -70,6 +70,7 @@ export default function TopBar() {
         <nav style={{display:"flex", gap:12, marginLeft:8}}>
           <Link href="/" style={{color:"#9fb3d9"}}>Ana Sayfa</Link>
           <Link href="/whales" style={{color:"#9fb3d9"}}>Balina</Link>
+          <Link href="/balina2d" style={{color:"#9fb3d9"}}>Balina2D</Link>
           <Link href="/admin" style={{color:"#9fb3d9"}}>Panel</Link>
         </nav>
       </div>
