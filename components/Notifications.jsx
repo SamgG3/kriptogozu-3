@@ -1,6 +1,4 @@
-// components/Notifications.jsx
 import React from 'react'
-
 const t = ts => new Date(ts).toLocaleTimeString('tr-TR',{hour12:false})
 
 export default function Notifications({items=[]}){
