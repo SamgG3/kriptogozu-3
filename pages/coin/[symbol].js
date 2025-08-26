@@ -9,6 +9,7 @@ const fmt = (v, d = 2) => v==null||isNaN(v) ? "—" :
 const fmtPrice = (v)=>{ if(v==null||isNaN(v)) return "—"; const a=Math.abs(v); const d=a>=100?2:a>=1?4:6;
   return Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d}); };
 const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
+const tp = (h,l,c)=> (h+l+c)/3;
 
 /* ===== Core indicators ===== */
 const SMA=(arr,p)=>{ const n=arr?.length||0, out=new Array(n).fill(null); if(!arr||n<p) return out;
@@ -42,11 +43,13 @@ const StochRSI=(cl,rp=14,kp=14,dp=3)=>{ const r=RSI(cl,rp); const n=r.length; co
 const swingsFromCloses=(cl,look=3)=>{ const highs=[],lows=[]; for(let i=look;i<cl.length-look;i++){
   const w=cl.slice(i-look,i+look+1); const hi=Math.max(...w), lo=Math.min(...w);
   if(cl[i]===hi) highs.push({i,v:hi}); if(cl[i]===lo) lows.push({i,v:lo}); } return {highs,lows}; };
-const trendEval=(closes)=>{ if(!closes||closes.length<22) return "—";
-  const e20=EMA(closes,20); const c=closes.at(-1), e=e20.at(-1), ep=e20.at(-2);
-  if([c,e,ep].some(x=>x==null)) return "—"; const slope=e-ep;
-  if(c>e && slope>=0) return "LONG";
-  if(c<e && slope<=0) return "SHORT";
+const trendEval=(closes)=>{ if(!closes||closes.length<210) return "—";
+  const e20=EMA(closes,20), e50=EMA(closes,50), e200=EMA(closes,200);
+  const c=closes.at(-1), e20n=e20.at(-1), e20p=e20.at(-2);
+  if([c,e20n,e20p].some(x=>x==null)) return "—";
+  const slope20 = e20n - e20p;
+  if (c>e20n && slope20>=0) return "LONG";
+  if (c<e20n && slope20<=0) return "SHORT";
   return "—";
 };
 const longShortPct=(close,ema20,rsi,stK,stD,bbU,bbL)=>{ const emaDist=(close!=null&&ema20!=null)?((close-ema20)/ema20)*100:null;
@@ -54,6 +57,7 @@ const longShortPct=(close,ema20,rsi,stK,stD,bbU,bbL)=>{ const emaDist=(close!=nu
   const nEMA=emaDist==null?0:clamp(emaDist/3,-1,1), nRSI=rsi==null?0:clamp((rsi-50)/25,-1,1), nKxD=kx==null?0:clamp(kx/50,-1,1), nBand=bandPos==null?0:clamp((bandPos-50)/30,-1,1);
   const score=0.35*nEMA+0.30*nRSI+0.20*nKxD+0.15*nBand; const longPct=Math.round(((score+1)/2)*100); return { longPct, shortPct:100-longPct }; };
 
+/* ===== React ===== */
 export default function CoinDetail(){
   const router = useRouter();
   const raw = router.query.symbol;
@@ -68,17 +72,8 @@ export default function CoinDetail(){
   const [trendMap, setTrendMap] = useState({});
   const [biasMap, setBiasMap] = useState({});
   const [flows, setFlows] = useState([]);
-  const [flowMin, setFlowMin] = useState(100000); // 100k / 500k / 1M+
   const [tick, setTick] = useState({ last:null, chg:null });
-  const [fav, setFav] = useState(()=> {
-    try{ const a=JSON.parse(localStorage.getItem("favSymbols")||"[]"); return a.includes(symbol); }catch{return false;}
-  });
   const priceWS = useRef(null); const flowWS = useRef(null);
-
-  // fav init on symbol change
-  useEffect(()=>{
-    try{ const a=JSON.parse(localStorage.getItem("favSymbols")||"[]"); setFav(a.includes(symbol)); }catch{}
-  }, [symbol]);
 
   async function fromBackend(sym,intv,limit=300){
     const r = await fetch(`/api/futures/indicators?symbol=${sym}&interval=${intv}&limit=${limit}`,{cache:"no-store"});
@@ -164,7 +159,7 @@ export default function CoinDetail(){
     }catch{}
   }, [symbol]);
 
-  // whale flow (>=flowMin)
+  // whale flow (>=100k)
   useEffect(()=>{
     if(!symbol) return;
     try{
@@ -176,31 +171,25 @@ export default function CoinDetail(){
         try{
           const d=JSON.parse(ev.data)?.data; if(!d) return;
           const price=+d.p, qty=+d.q, usd=price*qty;
-          if(usd>=flowMin){
+          if(usd>=100000){
             let side = d.m ? "SELL" : "BUY";
             if(lastP!=null && price>lastP) side="BUY";
             if(lastP!=null && price<lastP) side="SELL";
             lastP=price;
-            setFlows(arr=>[{t:Date.now(), side, price, qty, usd}, ...arr].slice(0,80));
+            setFlows(arr=>[{t:Date.now(), side, price, qty, usd}, ...arr].slice(0,50));
           }
         }catch{}
       };
       return ()=>{ try{ws.close();}catch{} };
     }catch{}
-  }, [symbol, flowMin]);
+  }, [symbol]);
 
-  // entry & SR
   const entry = tick.last ?? ind?.closes?.at(-1) ?? null;
   const sr = useMemo(()=>{
     const C = ind?.closes || [];
     const price = entry;
     if(!C.length || price==null) return {supports:[], resistances:[]};
-    // basit swingi closes'tan türet
-    const highs=[], lows=[]; const look=3;
-    for(let i=look;i<C.length-look;i++){
-      const w=C.slice(i-look,i+look+1); const hi=Math.max(...w), lo=Math.min(...w);
-      if(C[i]===hi) highs.push(hi); if(C[i]===lo) lows.push(lo);
-    }
+    let highs,lows; const sw=swingsFromCloses(C,3); highs=sw.highs.map(x=>x.v); lows=sw.lows.map(x=>x.v);
     const up = highs.filter(v=>v>price).sort((a,b)=>a-b).slice(0,3);
     const dn = lows.filter(v=>v<price).sort((a,b)=>b-a).slice(0,3);
     return {supports:dn, resistances:up};
@@ -215,17 +204,6 @@ export default function CoinDetail(){
     return longShortPct(entry, ind?.ema20, ind?.rsi14, ind?.stochK, ind?.stochD, ind?.bbUpper, ind?.bbLower);
   }, [ind, entry]);
 
-  function toggleFav(){
-    try{
-      const a = JSON.parse(localStorage.getItem("favSymbols")||"[]");
-      const set = new Set(a);
-      fav ? set.delete(symbol) : set.add(symbol);
-      const arr = Array.from(set);
-      localStorage.setItem("favSymbols", JSON.stringify(arr));
-      setFav(!fav);
-    }catch{}
-  }
-
   return (
     <main style={{ padding:"14px 16px", fontSize:14, lineHeight:1.35 }}>
       {/* Header */}
@@ -233,7 +211,6 @@ export default function CoinDetail(){
         <Link href="/" style={{ color:"#9bd0ff", textDecoration:"none" }}>← Ana Sayfa</Link>
         <span style={{ opacity:.6 }}>•</span>
         <b style={{ color:"#9bd0ff", fontSize:18 }}>{symbol || "—"}</b>
-        <button onClick={toggleFav} className="btn" title="Favori"> {fav ? "★ Favori" : "☆ Favori"} </button>
         <span style={{ marginLeft:10, opacity:.8 }}>Entry: <b>{fmtPrice(entry)}</b></span>
         <span style={{ marginLeft:8, color: tick.chg==null ? "#d0d6e6" : (tick.chg>=0?"#22d39a":"#ff6b6b"), fontWeight:800 }}>
           {tick.chg==null?"":(tick.chg>=0?"+":"")+fmt(tick.chg,2)+"%"}
@@ -250,7 +227,7 @@ export default function CoinDetail(){
       <Box title="Trend Kırılımları">
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(110px, 1fr))", gap:8 }}>
           {["1m","3m","5m","15m","30m","1h","4h","1d","3d"].map(tf=>(
-            <Chip key={tf} label={tf.toUpperCase()} side={biasMap[tf]} />
+            <Chip key={tf} label={tf.toUpperCase()} side={trendMap[tf]} />
           ))}
         </div>
       </Box>
@@ -314,13 +291,7 @@ export default function CoinDetail(){
           </Box>
         </div>
 
-        <Box title="Anlık Para Akışı">
-          <div style={{ marginBottom:8 }}>
-            Filtre:
-            <button className="btn" onClick={()=>setFlowMin(100000)} style={{marginLeft:8}}>≥ $100k</button>
-            <button className="btn" onClick={()=>setFlowMin(500000)} style={{marginLeft:6}}>≥ $500k</button>
-            <button className="btn" onClick={()=>setFlowMin(1000000)} style={{marginLeft:6}}>≥ $1M</button>
-          </div>
+        <Box title="Anlık Para Akışı (≥ $100k)">
           <div style={{ maxHeight: 340, overflowY: "auto" }}>
             {!flows.length && <div style={{ opacity:.7 }}>Henüz kayıt yok…</div>}
             {flows.map((it,idx)=>(
@@ -339,8 +310,8 @@ export default function CoinDetail(){
       <Box title="Yön Matrisi (EMA20)">
         <div style={{ display:"grid", gap:10 }}>
           <RowMatrix label="Dakika" list={["1m","3m","5m","15m","30m"]} bias={biasMap} />
-          <RowMatrix label="Saat"   list={["1h","4h"]}  bias={biasMap} />
-          <RowMatrix label="Gün"    list={["1d","3d"]}  bias={biasMap} />
+          <RowMatrix label="Saat"   list={["1h","2h","3h","4h","12h"]}  bias={biasMap} />
+          <RowMatrix label="Gün"    list={["1d","3d"]}                  bias={biasMap} />
         </div>
       </Box>
 
@@ -354,7 +325,7 @@ export default function CoinDetail(){
 /* ===== Tiny UI parts ===== */
 function Box({ title, children }) {
   return (
-    <div style={{ background:"#121a33", border:"1px solid #202945", borderRadius:10, padding:12, color:"#e6edf6", marginBottom:10 }}>
+    <div style={{ background:"#121a33", border:"1px solid #202945", borderRadius:10, padding:12, color:"#e6edf6" }}>
       <div style={{ fontWeight:800, marginBottom:6, color:"#9bd0ff" }}>{title}</div>
       {children}
     </div>
@@ -396,9 +367,11 @@ function TabbedBBATR({ bbUpper, bbLower, atr14 }) {
   const [tab, setTab] = useState("BB");
   const Tab = ({ t }) => (
     <button onClick={()=>setTab(t)}
-      className="btn"
-      style={{ marginRight:8 }}
-    >{t}</button>
+      style={{
+        padding:"6px 10px", marginRight:8,
+        background: tab===t ? "#1a2342" : "#111730",
+        color:"#cfe2ff", border:"1px solid #202945", borderRadius:8, cursor:"pointer"
+      }}>{t}</button>
   );
   return (
     <Box title="BB & ATR">
