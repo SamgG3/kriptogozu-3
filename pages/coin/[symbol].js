@@ -3,6 +3,7 @@ import { useRouter } from "next/router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
+/* ------------ helpers ------------- */
 const fmt = (v, d = 2) =>
   v == null || isNaN(v)
     ? "—"
@@ -50,8 +51,8 @@ function biasFromLatest(L) {
   return { longPct, shortPct, score };
 }
 
-/** swing high/low tespiti (pencere=3) */
-function swings(series = [], look = 3) {
+/* swing high/low (pencere=3) */
+function swingsFromSeries(series = [], look = 3) {
   const highs = [];
   const lows = [];
   for (let i = look; i < series.length - look; i++) {
@@ -64,38 +65,85 @@ function swings(series = [], look = 3) {
   return { highs, lows };
 }
 
-/** basit destek/direnç: son 300 bar içinden en yakın 3 seviye */
-function supportResistance(closes = [], highs = [], lows = [], price) {
-  const up = highs
-    .map((h) => h.v)
+/* mini lineer regresyon (son N kapanış için eğim) */
+function linregSlope(vals = []) {
+  const n = vals.length;
+  if (n < 2) return 0;
+  let sumX = 0,
+    sumY = 0,
+    sumXY = 0,
+    sumXX = 0;
+  for (let i = 0; i < n; i++) {
+    const x = i + 1;
+    const y = vals[i];
+    sumX += x;
+    sumY += y;
+    sumXY += x * y;
+    sumXX += x * x;
+  }
+  const denom = n * sumXX - sumX * sumX;
+  if (denom === 0) return 0;
+  const m = (n * sumXY - sumX * sumY) / denom; // slope
+  return m;
+}
+
+/* destek/direnç çıkar */
+function supportResistance({ closes = [], highs = [], lows = [] }, price) {
+  const up = (highs.length ? highs.map((h) => h.v) : [])
     .filter((v) => v > price)
     .sort((a, b) => a - b)
     .slice(0, 3);
-  const dn = lows
-    .map((l) => l.v)
+  const dn = (lows.length ? lows.map((l) => l.v) : [])
     .filter((v) => v < price)
     .sort((a, b) => b - a)
     .slice(0, 3);
+
+  // highs/lows yoksa closes üzerinden alternatif
+  if ((!up.length || !dn.length) && closes.length > 10) {
+    const { highs: hs2, lows: ls2 } = swingsFromSeries(closes, 3);
+    if (!up.length)
+      hs2
+        .map((x) => x.v)
+        .filter((v) => v > price)
+        .sort((a, b) => a - b)
+        .slice(0, 3)
+        .forEach((v, i) => (up[i] = v));
+    if (!dn.length)
+      ls2
+        .map((x) => x.v)
+        .filter((v) => v < price)
+        .sort((a, b) => b - a)
+        .slice(0, 3)
+        .forEach((v, i) => (dn[i] = v));
+  }
   return { resistances: up, supports: dn };
 }
 
-/** EMA20 eğimi ve close>EMA geçişi ile “kırılım” işareti */
-function trendBreak(latest, prev) {
+/* trend kırılımı: EMA20 geçiş + regresyon eğimi yedek */
+function trendBreak(latest, prev, closes) {
   if (!latest || !prev) return { text: "—", color: "#9aa4b2" };
   const c = latest.close,
     e = latest.ema20,
     pC = prev.close,
     pE = prev.ema20;
-  if (c == null || e == null || pC == null || pE == null)
-    return { text: "—", color: "#9aa4b2" };
-  const slope = e - pE; // EMA eğimi
-  if (c > e && pC <= pE && slope >= 0)
-    return { text: "Yukarı yönlü kırılım", color: "#22d39a" };
-  if (c < e && pC >= pE && slope <= 0)
-    return { text: "Aşağı yönlü kırılım", color: "#ff6b6b" };
+
+  if (c != null && e != null && pC != null && pE != null) {
+    const slope = e - pE;
+    if (c > e && pC <= pE && slope >= 0)
+      return { text: "Yukarı yönlü kırılım", color: "#22d39a" };
+    if (c < e && pC >= pE && slope <= 0)
+      return { text: "Aşağı yönlü kırılım", color: "#ff6b6b" };
+  }
+
+  // fallback: son 50 close eğimi
+  const tail = (closes || []).slice(-50);
+  const m = linregSlope(tail);
+  if (m > 0) return { text: "Yukarı eğim (zayıf sinyal)", color: "#22d39a" };
+  if (m < 0) return { text: "Aşağı eğim (zayıf sinyal)", color: "#ff6b6b" };
   return { text: "Net kırılım yok", color: "#9aa4b2" };
 }
 
+/* ------------ component ------------- */
 export default function CoinDetail() {
   const router = useRouter();
   const symbolParam = router.query.symbol;
@@ -106,17 +154,16 @@ export default function CoinDetail() {
   }, [symbolParam]);
 
   const [interval, setIntervalStr] = useState("1m");
-  const [data, setData] = useState(null); // api indicators
+  const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // canlı fiyat
   const [tick, setTick] = useState({ last: null, chg: null });
   const [wsUp, setWsUp] = useState(false);
   const wsRef = useRef(null);
 
-  // 3 sn’de bir veri çek
   const timer = useRef(null);
 
+  // fetch indicators
   async function load() {
     if (!symbol) return;
     try {
@@ -127,7 +174,7 @@ export default function CoinDetail() {
       ).then((r) => r.json());
       setData(res);
     } catch {
-      // ignore
+      /* ignore */
     } finally {
       setLoading(false);
     }
@@ -139,11 +186,11 @@ export default function CoinDetail() {
 
   useEffect(() => {
     if (timer.current) clearInterval(timer.current);
-    timer.current = setInterval(load, 3000); // 3 sn
+    timer.current = setInterval(load, 3000);
     return () => clearInterval(timer.current);
   }, [symbol, interval]);
 
-  // WS miniTicker
+  // WS price
   useEffect(() => {
     if (!symbol) return;
     try {
@@ -165,9 +212,7 @@ export default function CoinDetail() {
         try {
           const msg = JSON.parse(ev.data);
           const d = msg?.data;
-          if (d?.e === "24hrMiniTicker") {
-            setTick({ last: Number(d.c), chg: Number(d.P) });
-          }
+          if (d?.e === "24hrMiniTicker") setTick({ last: Number(d.c), chg: Number(d.P) });
         } catch {}
       };
       return () => {
@@ -180,24 +225,52 @@ export default function CoinDetail() {
     }
   }, [symbol]);
 
+  // veriyi normalize et (candles varsa ondan dizi üret)
+  const norm = useMemo(() => {
+    const closes = data?.closes
+      ? data.closes.slice()
+      : Array.isArray(data?.candles)
+      ? data.candles.map((c) => Number(c.close))
+      : [];
+    const highsArr = data?.highs
+      ? data.highs.slice()
+      : Array.isArray(data?.candles)
+      ? data.candles.map((c) => Number(c.high))
+      : [];
+    const lowsArr = data?.lows
+      ? data.lows.slice()
+      : Array.isArray(data?.candles)
+      ? data.candles.map((c) => Number(c.low))
+      : [];
+
+    const swingHL =
+      highsArr.length && lowsArr.length
+        ? {
+            highs: highsArr.map((v, i) => ({ i, v })),
+            lows: lowsArr.map((v, i) => ({ i, v })),
+          }
+        : swingsFromSeries(closes, 3);
+
+    return { closes, swingHL };
+  }, [data?.closes, data?.candles, data?.highs, data?.lows]);
+
   const latest = data?.latest;
   const prev = data?.prev;
-  const close = tick.last ?? latest?.close ?? null;
 
-  const { highs, lows } = useMemo(() => {
-    const closes = data?.closes || [];
-    return swings(closes, 3);
-  }, [data?.closes]);
+  const price = tick.last ?? latest?.close ?? null;
 
   const sr = useMemo(() => {
-    const closes = data?.closes || [];
-    return supportResistance(closes, highs, lows, close ?? 0);
-  }, [data?.closes, highs, lows, close]);
+    if (price == null) return { resistances: [], supports: [] };
+    return supportResistance(
+      { closes: norm.closes, highs: norm.swingHL.highs, lows: norm.swingHL.lows },
+      price
+    );
+  }, [norm.closes, norm.swingHL, price]);
 
   const { longPct, shortPct } = biasFromLatest(latest || {});
-  const brk = trendBreak(latest, prev);
+  const brk = trendBreak(latest, prev, norm.closes);
 
-  // TP/SL (basit kural: long için en yakın dirençler TP, en yakın destek SL; short için tersi)
+  // TP/SL
   const longTP = [sr.resistances[0], sr.resistances[1], sr.resistances[2]];
   const shortTP = [sr.supports[0], sr.supports[1], sr.supports[2]];
   const longSL = sr.supports[0];
@@ -213,7 +286,7 @@ export default function CoinDetail() {
         <span style={{ opacity: 0.8 }}>Sembol:</span>
         <b style={{ color: "#9bd0ff", fontSize: 18 }}>{symbol || "—"}</b>
         <span style={{ marginLeft: 10, opacity: 0.8 }}>
-          Fiyat: <b>{fmtPrice(close)}</b>
+          Fiyat: <b>{fmtPrice(price)}</b>
         </span>
         <span
           style={{
@@ -264,7 +337,7 @@ export default function CoinDetail() {
         </span>
       </div>
 
-      {/* Özet kutuları */}
+      {/* Özet + İndikatör + S/R + TP/SL */}
       <div
         style={{
           display: "grid",
@@ -275,15 +348,26 @@ export default function CoinDetail() {
       >
         <Box title="Durum">
           <div>
-            Long{" "}
-            <b style={{ color: "#22d39a" }}>{fmt(longPct, 0)}
-              %</b>{" "}
-            / Short <b style={{ color: "#ff6b6b" }}>{fmt(shortPct, 0)}%</b>
+            Long <b style={{ color: "#22d39a" }}>{fmt(longPct, 0)}%</b> / Short{" "}
+            <b style={{ color: "#ff6b6b" }}>{fmt(shortPct, 0)}%</b>
           </div>
           <div style={{ marginTop: 4 }}>
-            Trend:{" "}
-            <b style={{ color: brk.color }}>{brk.text}</b>
+            Trend: <b style={{ color: brk.color }}>{brk.text}</b>
           </div>
+        </Box>
+
+        <Box title="İndikatörler">
+          <table style={{ width: "100%", fontSize: 13 }}>
+            <tbody>
+              <Row name="EMA20" v={latest?.ema20} />
+              <Row name="EMA50" v={latest?.ema50} />
+              <Row name="RSI14" v={latest?.rsi14} d={2} />
+              <Row name="Stoch K" v={latest?.stochK} d={2} />
+              <Row name="Stoch D" v={latest?.stochD} d={2} />
+              <Row name="BB Üst" v={latest?.bbUpper} />
+              <Row name="BB Alt" v={latest?.bbLower} />
+            </tbody>
+          </table>
         </Box>
 
         <Box title="Destek / Direnç">
@@ -320,6 +404,7 @@ export default function CoinDetail() {
   );
 }
 
+/* ------------ small pieces ------------- */
 function Box({ title, children }) {
   return (
     <div
@@ -334,5 +419,14 @@ function Box({ title, children }) {
       <div style={{ fontWeight: 800, marginBottom: 6, color: "#9bd0ff" }}>{title}</div>
       {children}
     </div>
+  );
+}
+
+function Row({ name, v, d = 2 }) {
+  return (
+    <tr>
+      <td style={{ opacity: 0.85 }}>{name}</td>
+      <td style={{ textAlign: "right", fontWeight: 700 }}>{fmtPrice(v)}</td>
+    </tr>
   );
 }
