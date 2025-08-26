@@ -62,7 +62,7 @@ export default function Home() {
         ws.onmessage = (ev)=>{
           try{
             const d = JSON.parse(ev.data)?.data;
-            if(d?.e==="24hrMiniTicker"){
+            if(d && d.e==="24hrMiniTicker"){
               setTickers(prev=>({ ...prev, [d.s]: { last:+d.c, pct:+d.P } }));
             }
           }catch{}
@@ -174,7 +174,6 @@ function CoinCard({ sym, row }) {
 
   const { longPct, shortPct } = biasFromLatest(L);
   const signal = longPct >= 55 ? "LONG" : shortPct >= 55 ? "SHORT" : "NÖTR";
-  const color  = signal === "LONG" ? "#20c997" : signal === "SHORT" ? "#ff6b6b" : "#89a";
   const border = signal === "LONG" ? "#1f7a4f" : signal === "SHORT" ? "#7a2e2e" : "#2a2f45";
 
   return (
@@ -200,7 +199,7 @@ function CoinCard({ sym, row }) {
           </div>
         </div>
         <div style={{textAlign:"right"}}>
-          <div style={{fontWeight:800, color}}>{signal}</div>
+          <div style={{fontWeight:800, color: signal==="LONG" ? "#20c997" : signal==="SHORT" ? "#ff6b6b" : "#89a"}}>{signal}</div>
           <div style={{opacity:.6, fontSize:12, marginTop:6}}>Tıkla → detay</div>
         </div>
       </div>
