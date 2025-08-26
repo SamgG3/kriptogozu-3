@@ -1,98 +1,338 @@
 // pages/coin/[symbol].js
-import React, { useMemo, useState, useEffect } from 'react'
-import { useRouter } from 'next/router'
-import TPSLPanel from '../../components/TPSLPanel'
-import TrendBadge from '../../components/TrendBadge'
-import Notifications from '../../components/Notifications'
-import { findSR } from '../../lib/sr'
-import { generateSignalFromOHLC } from '../../lib/signals'
+import { useRouter } from "next/router";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 
-export default function CoinDynamicPage(){
-  const router = useRouter()
-  const ready  = router.isReady
-  const symbol = ready ? String(router.query.symbol || 'BTCUSDT').toUpperCase() : 'BTCUSDT'
-  const REFRESH_MS = 3000
+const fmt = (v, d = 2) =>
+  v == null || isNaN(v)
+    ? "—"
+    : Number(v).toLocaleString("tr-TR", {
+        minimumFractionDigits: d,
+        maximumFractionDigits: d,
+      });
 
-  const [ohlc, setOhlc] = useState([])
-  const [price, setPrice] = useState(0)
-  const [decimals, setDecimals] = useState(2)
-  const [signals, setSignals] = useState([])
+const fmtPrice = (v) => {
+  if (v == null || isNaN(v)) return "—";
+  const a = Math.abs(v);
+  const d = a >= 100 ? 2 : a >= 1 ? 4 : 6;
+  return Number(v).toLocaleString("tr-TR", {
+    minimumFractionDigits: d,
+    maximumFractionDigits: d,
+  });
+};
 
-  useEffect(()=>{
-    if (!ready) return
-    let alive = true
-    async function load(){
-      try{
-        const r = await fetch(`/api/futures/price?symbol=${symbol}`)
-        const data = await r.json()
-        const arr = Array.isArray(data.ohlc) ? data.ohlc : []
-        if (!alive) return
-        setOhlc(arr)
-        const fallbackClose = arr.length ? Number(arr[arr.length - 1].close) : 0
-        const p = Number(data.price ?? fallbackClose)
-        setPrice(p)
-        setDecimals(typeof data.priceDecimals === 'number' ? data.priceDecimals : (p >= 1 ? 2 : 6))
-      }catch{}
+const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
+
+function biasFromLatest(L) {
+  if (!L) return { longPct: 50, shortPct: 50, score: 0 };
+  const close = L.close,
+    ema = L.ema20,
+    rsi = L.rsi14,
+    k = L.stochK,
+    d = L.stochD,
+    bu = L.bbUpper,
+    bl = L.bbLower;
+  const emaDist = close != null && ema != null ? ((close - ema) / ema) * 100 : null;
+  const kCross = k != null && d != null ? k - d : null;
+  const bandPos =
+    bu != null && bl != null && close != null ? ((close - bl) / (bu - bl)) * 100 : null;
+  const nEMA = emaDist == null ? 0 : clamp(emaDist / 3, -1, 1);
+  const nRSI = rsi == null ? 0 : clamp((rsi - 50) / 25, -1, 1);
+  const nKxD = kCross == null ? 0 : clamp(kCross / 50, -1, 1);
+  const nBand = bandPos == null ? 0 : clamp((bandPos - 50) / 30, -1, 1);
+  const wEMA = 0.35,
+    wRSI = 0.3,
+    wKxD = 0.2,
+    wBand = 0.15;
+  const score = wEMA * nEMA + wRSI * nRSI + wKxD * nKxD + wBand * nBand;
+  const longPct = Math.round(((score + 1) / 2) * 100);
+  const shortPct = 100 - longPct;
+  return { longPct, shortPct, score };
+}
+
+/** swing high/low tespiti (pencere=3) */
+function swings(series = [], look = 3) {
+  const highs = [];
+  const lows = [];
+  for (let i = look; i < series.length - look; i++) {
+    const window = series.slice(i - look, i + look + 1);
+    const hi = Math.max(...window);
+    const lo = Math.min(...window);
+    if (series[i] === hi) highs.push({ i, v: hi });
+    if (series[i] === lo) lows.push({ i, v: lo });
+  }
+  return { highs, lows };
+}
+
+/** basit destek/direnç: son 300 bar içinden en yakın 3 seviye */
+function supportResistance(closes = [], highs = [], lows = [], price) {
+  const up = highs
+    .map((h) => h.v)
+    .filter((v) => v > price)
+    .sort((a, b) => a - b)
+    .slice(0, 3);
+  const dn = lows
+    .map((l) => l.v)
+    .filter((v) => v < price)
+    .sort((a, b) => b - a)
+    .slice(0, 3);
+  return { resistances: up, supports: dn };
+}
+
+/** EMA20 eğimi ve close>EMA geçişi ile “kırılım” işareti */
+function trendBreak(latest, prev) {
+  if (!latest || !prev) return { text: "—", color: "#9aa4b2" };
+  const c = latest.close,
+    e = latest.ema20,
+    pC = prev.close,
+    pE = prev.ema20;
+  if (c == null || e == null || pC == null || pE == null)
+    return { text: "—", color: "#9aa4b2" };
+  const slope = e - pE; // EMA eğimi
+  if (c > e && pC <= pE && slope >= 0)
+    return { text: "Yukarı yönlü kırılım", color: "#22d39a" };
+  if (c < e && pC >= pE && slope <= 0)
+    return { text: "Aşağı yönlü kırılım", color: "#ff6b6b" };
+  return { text: "Net kırılım yok", color: "#9aa4b2" };
+}
+
+export default function CoinDetail() {
+  const router = useRouter();
+  const symbolParam = router.query.symbol;
+  const symbol = useMemo(() => {
+    if (!symbolParam) return null;
+    const raw = String(symbolParam).toUpperCase();
+    return raw.endsWith("USDT") ? raw : `${raw}USDT`;
+  }, [symbolParam]);
+
+  const [interval, setIntervalStr] = useState("1m");
+  const [data, setData] = useState(null); // api indicators
+  const [loading, setLoading] = useState(false);
+
+  // canlı fiyat
+  const [tick, setTick] = useState({ last: null, chg: null });
+  const [wsUp, setWsUp] = useState(false);
+  const wsRef = useRef(null);
+
+  // 3 sn’de bir veri çek
+  const timer = useRef(null);
+
+  async function load() {
+    if (!symbol) return;
+    try {
+      setLoading(true);
+      const res = await fetch(
+        `/api/futures/indicators?symbol=${symbol}&interval=${interval}&limit=300`,
+        { cache: "no-store" }
+      ).then((r) => r.json());
+      setData(res);
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false);
     }
-    load()
-    const id = setInterval(load, REFRESH_MS)
-    return ()=>{ alive=false; clearInterval(id) }
-  }, [ready, symbol])
+  }
 
-  const levels = useMemo(()=> findSR(ohlc, 200), [ohlc])
+  useEffect(() => {
+    load();
+  }, [symbol, interval]);
 
-  useEffect(()=>{
-    if (!ready) return
-    const id = setInterval(()=>{
-      if (!ohlc.length) return
-      const s = generateSignalFromOHLC(ohlc)
-      if (s) setSignals(prev => [{ ...s, symbol }, ...prev].slice(0, 50))
-    }, REFRESH_MS)
-    return ()=>clearInterval(id)
-  }, [ready, ohlc, symbol])
+  useEffect(() => {
+    if (timer.current) clearInterval(timer.current);
+    timer.current = setInterval(load, 3000); // 3 sn
+    return () => clearInterval(timer.current);
+  }, [symbol, interval]);
+
+  // WS miniTicker
+  useEffect(() => {
+    if (!symbol) return;
+    try {
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch {}
+        wsRef.current = null;
+      }
+      const stream = `${symbol.toLowerCase()}@miniTicker`;
+      const url = `wss://fstream.binance.com/stream?streams=${stream}`;
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.onopen = () => setWsUp(true);
+      ws.onclose = () => setWsUp(false);
+      ws.onerror = () => setWsUp(false);
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          const d = msg?.data;
+          if (d?.e === "24hrMiniTicker") {
+            setTick({ last: Number(d.c), chg: Number(d.P) });
+          }
+        } catch {}
+      };
+      return () => {
+        try {
+          ws.close();
+        } catch {}
+      };
+    } catch {
+      setWsUp(false);
+    }
+  }, [symbol]);
+
+  const latest = data?.latest;
+  const prev = data?.prev;
+  const close = tick.last ?? latest?.close ?? null;
+
+  const { highs, lows } = useMemo(() => {
+    const closes = data?.closes || [];
+    return swings(closes, 3);
+  }, [data?.closes]);
+
+  const sr = useMemo(() => {
+    const closes = data?.closes || [];
+    return supportResistance(closes, highs, lows, close ?? 0);
+  }, [data?.closes, highs, lows, close]);
+
+  const { longPct, shortPct } = biasFromLatest(latest || {});
+  const brk = trendBreak(latest, prev);
+
+  // TP/SL (basit kural: long için en yakın dirençler TP, en yakın destek SL; short için tersi)
+  const longTP = [sr.resistances[0], sr.resistances[1], sr.resistances[2]];
+  const shortTP = [sr.supports[0], sr.supports[1], sr.supports[2]];
+  const longSL = sr.supports[0];
+  const shortSL = sr.resistances[0];
 
   return (
-    <div className="max-w-6xl mx-auto p-4 md:grid md:grid-cols-[2fr,1fr] md:gap-6">
-      <section className="space-y-6">
-        <div>
-          <div className="text-lg font-semibold">{symbol}</div>
-          <div className="text-neutral-400">
-            Fiyat: <b className="text-neutral-200">{Number(price).toFixed(decimals)}</b>
-          </div>
-        </div>
+    <main style={{ padding: "14px 16px", fontSize: 14, lineHeight: 1.35 }}>
+      <div style={{ marginBottom: 10, display: "flex", gap: 8, alignItems: "center" }}>
+        <Link href="/" style={{ color: "#9bd0ff", textDecoration: "none" }}>
+          ← Ana Sayfa
+        </Link>
+        <span style={{ opacity: 0.6 }}>•</span>
+        <span style={{ opacity: 0.8 }}>Sembol:</span>
+        <b style={{ color: "#9bd0ff", fontSize: 18 }}>{symbol || "—"}</b>
+        <span style={{ marginLeft: 10, opacity: 0.8 }}>
+          Fiyat: <b>{fmtPrice(close)}</b>
+        </span>
+        <span
+          style={{
+            marginLeft: 8,
+            color: tick.chg == null ? "#d0d6e6" : tick.chg >= 0 ? "#22d39a" : "#ff6b6b",
+            fontWeight: 800,
+          }}
+        >
+          {tick.chg == null ? "" : (tick.chg >= 0 ? "+" : "") + fmt(tick.chg, 2) + "%"}
+        </span>
+        <span style={{ marginLeft: 8, opacity: 0.6 }}>
+          WS: {wsUp ? "Canlı" : "—"}
+        </span>
 
-        <TPSLPanel price={price} priceDecimals={decimals} levels={levels} />
-
-        <div className="grid grid-cols-2 gap-8 mt-2">
-          <div>
-            <div className="text-[11px] text-neutral-400 mb-1">Destek</div>
-            {levels.filter(l=>l.kind==='support').sort((a,b)=>b.price-a.price).slice(0,4).map((s,i)=>(
-              <div key={i} className="flex items-center justify-between text-sm">
-                <span className="text-neutral-300">{s.price.toFixed(decimals)}</span>
-                <span className="text-[11px] text-neutral-500">güç {s.strength}/5</span>
-              </div>
+        <span style={{ marginLeft: "auto" }}>
+          <select
+            value={interval}
+            onChange={(e) => setIntervalStr(e.target.value)}
+            style={{
+              padding: "6px 8px",
+              background: "#121625",
+              border: "1px solid #23283b",
+              borderRadius: 8,
+              color: "#e6e6e6",
+            }}
+          >
+            {["1m", "5m", "15m", "1h", "4h"].map((x) => (
+              <option key={x} value={x}>
+                {x}
+              </option>
             ))}
-          </div>
+          </select>
+          <button
+            onClick={load}
+            disabled={loading}
+            style={{
+              marginLeft: 8,
+              padding: "6px 10px",
+              background: "#1a1f2e",
+              border: "1px solid #2a2f45",
+              borderRadius: 8,
+              color: "#fff",
+              fontWeight: 700,
+            }}
+          >
+            {loading ? "Yükleniyor…" : "Yenile"}
+          </button>
+        </span>
+      </div>
+
+      {/* Özet kutuları */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+          gap: 10,
+          marginBottom: 10,
+        }}
+      >
+        <Box title="Durum">
           <div>
-            <div className="text-[11px] text-neutral-400 mb-1">Direnç</div>
-            {levels.filter(l=>l.kind==='resistance').sort((a,b)=>a.price-b.price).slice(0,4).map((r,i)=>(
-              <div key={i} className="flex items-center justify-between text-sm">
-                <span className="text-neutral-300">{r.price.toFixed(decimals)}</span>
-                <span className="text-[11px] text-neutral-500">güç {r.strength}/5</span>
-              </div>
-            ))}
+            Long{" "}
+            <b style={{ color: "#22d39a" }}>{fmt(longPct, 0)}
+              %</b>{" "}
+            / Short <b style={{ color: "#ff6b6b" }}>{fmt(shortPct, 0)}%</b>
           </div>
-        </div>
+          <div style={{ marginTop: 4 }}>
+            Trend:{" "}
+            <b style={{ color: brk.color }}>{brk.text}</b>
+          </div>
+        </Box>
 
-        <TrendBadge ohlc={ohlc} priceDecimals={decimals} />
-        <p className="mt-2 text-[11px] text-neutral-400">
-          Otomatik S/R & trend hesaplaması kullanılır — <span className="underline">yanılma payı vardır</span>.
-        </p>
-      </section>
+        <Box title="Destek / Direnç">
+          <div>Destek: {sr.supports?.length ? sr.supports.map((v) => fmtPrice(v)).join(" • ") : "—"}</div>
+          <div style={{ marginTop: 4 }}>
+            Direnç: {sr.resistances?.length ? sr.resistances.map((v) => fmtPrice(v)).join(" • ") : "—"}
+          </div>
+        </Box>
 
-      <aside className="mt-6 md:mt-0">
-        <Notifications items={signals} />
-      </aside>
+        <Box title="Long TP/SL">
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            <li>TP1: {fmtPrice(longTP[0])}</li>
+            <li>TP2: {fmtPrice(longTP[1])}</li>
+            <li>TP3: {fmtPrice(longTP[2])}</li>
+            <li>SL: {fmtPrice(longSL)}</li>
+          </ul>
+        </Box>
+
+        <Box title="Short TP/SL">
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            <li>TP1: {fmtPrice(shortTP[0])}</li>
+            <li>TP2: {fmtPrice(shortTP[1])}</li>
+            <li>TP3: {fmtPrice(shortTP[2])}</li>
+            <li>SL: {fmtPrice(shortSL)}</li>
+          </ul>
+        </Box>
+      </div>
+
+      <div style={{ opacity: 0.7, fontSize: 12, marginTop: 8 }}>
+        Otomatik S/R & trend hesaplaması kullanılır — yanılma payı vardır. Bu bilgiler
+        yatırım tavsiyesi değildir.
+      </div>
+    </main>
+  );
+}
+
+function Box({ title, children }) {
+  return (
+    <div
+      style={{
+        background: "#121a33",
+        border: "1px solid #202945",
+        borderRadius: 10,
+        padding: 12,
+        color: "#e6edf6",
+      }}
+    >
+      <div style={{ fontWeight: 800, marginBottom: 6, color: "#9bd0ff" }}>{title}</div>
+      {children}
     </div>
-  )
+  );
 }
