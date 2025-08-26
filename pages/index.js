@@ -1,5 +1,5 @@
 // pages/index.js
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 /* ===== Sabitler ===== */
@@ -117,7 +117,14 @@ export default function Home() {
         <span style={{opacity:.7}}>(kartlarda özet • detay için tıkla)</span>
 
         <select value={interval} onChange={e=>setIntervalStr(e.target.value)}
-          style={{padding:"8px 10px", background:"#121625", border:"1px solid "#23283b", borderRadius:10, color:"#e6e6e6", marginLeft:10}}>
+          style={{
+            padding:"8px 10px",
+            background:"#121625",
+            border:"1px solid #23283b",   // ← düzeltildi
+            borderRadius:10,
+            color:"#e6e6e6",
+            marginLeft:10
+          }}>
           {ALL_TFS.map(x=><option key={x} value={x}>{x}</option>)}
         </select>
 
