@@ -1,35 +1,44 @@
 // pages/_app.js
 import { useEffect } from "react";
 
-// globals.css varsa yükle; yoksa hata çıkarma
+// globals.css varsa yüklensin; yoksa hata vermesin
 try { require("../styles/globals.css"); } catch {}
 
-export default function MyApp({ Component, pageProps }) {
-  useEffect(()=>{ try{ document.body.style.background = "#0b1020"; }catch{} },[]);
-  let PriceBar = null;
-  try { PriceBar = require("../components/PriceBar").default; } catch {}
-
+function Marquee({ text, position = "top" }) {
+  const borderTop = position === "bottom" ? "1px solid #1f2742" : "none";
+  const borderBottom = position === "top" ? "1px solid #1f2742" : "none";
   return (
-    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",background:"#0b1020",color:"#e6edf6"}}>
-      {/* Üst çubuk */}
-      <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",
-                   background:"#0f152a",borderBottom:"1px solid #1f2742"}}>
-        <div style={{fontWeight:800,color:"#9bd0ff"}}>KriptoGözÜ</div>
-        <div style={{marginLeft:"auto",display:"flex",gap:8}}>
-          <button style={btn}>Giriş</button>
-          <button style={btn}>Kayıt Ol</button>
-        </div>
+    <div style={{ width:"100%", background:"#0f1424", borderTop, borderBottom, overflow:"hidden" }}>
+      <div style={{
+        whiteSpace:"nowrap", display:"inline-block", padding:"8px 0",
+        animation:"scrollx 22s linear infinite", fontWeight:800, color:"#9bd0ff"
+      }}>
+        {text}&nbsp;&nbsp;{text}&nbsp;&nbsp;{text}&nbsp;&nbsp;{text}
       </div>
-
-      {/* TL / USD / USDT barı — dosyan varsa aynen çalışır */}
-      {PriceBar ? <PriceBar/> : null}
-
-      <main style={{flex:1}}>
-        <Component {...pageProps} />
-      </main>
+      <style jsx global>{`
+        @keyframes scrollx { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+        html, body, #__next { height: 100%; }
+        body { margin:0; background:#0b1020; color:#e6edf6; }
+      `}</style>
     </div>
   );
 }
 
-const btn = {padding:"8px 10px",background:"#11182e",border:"1px solid #223054",
-             borderRadius:10,color:"#e6edf6",cursor:"pointer"};
+export default function MyApp({ Component, pageProps }) {
+  useEffect(()=>{ try{ document.body.style.background = "#0b1020"; }catch{} },[]);
+  return (
+    <div style={{ minHeight:"100vh", display:"flex", flexDirection:"column", background:"#0b1020" }}>
+      {/* ÜST BANT */}
+      <Marquee text="— TANRININ GÖZÜ - KRİPTONUN GÖZÜ —" position="top" />
+      {/* İÇERİK */}
+      <main style={{ flex:1 }}>
+        <Component {...pageProps} />
+      </main>
+      {/* ALT BANT */}
+      <Marquee
+        text="--- Tanrının Gözü - Kriptonun Gözü --- Bu kanalda paylaşılanlar SPK kuralları gereğince KESİNLİKLE yatırım tavsiyesi değildir."
+        position="bottom"
+      />
+    </div>
+  );
+}
