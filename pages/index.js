@@ -2,10 +2,12 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
+/* ================== Sabitler ================== */
 const DEFAULTS = ["BTCUSDT","ETHUSDT","BNBUSDT"];
 const ALL_TFS  = ["1m","3m","5m","15m","30m","1h","2h","3h","4h","12h","1d","3d"];
+const WHALE_MIN_USD = 200000; // ≥ $200k
 
-/* ====== Helpers ====== */
+/* ================== Util ================== */
 const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
   Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
 const fmtPrice = (v)=>{
@@ -31,7 +33,58 @@ function biasFromLatest(L){
   return { longPct, shortPct: 100-longPct };
 }
 
-/* ====== Page ====== */
+/* ================== WS Helper (sağlam) ==================
+   - createWs({url, onMessage})
+   - Heartbeat (ping), auto-reconnect (exponential backoff),
+   - Kapandığında tekrar bağlanır; dışarıya status set eder.
+========================================================== */
+function createWs({ url, onMessage, onStatus }) {
+  let ws = null, alive = false, hbTimer = null, backoff = 1000;
+
+  const open = () => {
+    try {
+      ws = new WebSocket(url);
+      onStatus?.("connecting");
+      ws.onopen = () => {
+        alive = true;
+        onStatus?.("open");
+        backoff = 1000;
+        // heartbeat
+        clearInterval(hbTimer);
+        hbTimer = setInterval(() => {
+          try {
+            if (!ws || ws.readyState !== 1) return;
+            // Binance multiplex’te ping gerekmese de “noop” gönderip canlı tutuyoruz
+            ws.send(JSON.stringify({method:"PING", ts:Date.now()}));
+          } catch {}
+        }, 20000);
+      };
+      ws.onmessage = (ev) => {
+        try { onMessage?.(ev); } catch {}
+      };
+      ws.onerror = () => {
+        onStatus?.("error");
+      };
+      ws.onclose = () => {
+        onStatus?.("closed");
+        alive = false;
+        clearInterval(hbTimer);
+        // auto-reconnect
+        setTimeout(() => { backoff = Math.min(backoff*1.5, 15000); open(); }, backoff);
+      };
+    } catch (e) {
+      onStatus?.("error");
+      setTimeout(() => { backoff = Math.min(backoff*1.5, 15000); open(); }, backoff);
+    }
+  };
+  open();
+  return {
+    close: () => { try { clearInterval(hbTimer); ws && ws.close(); } catch {} },
+    get ready() { return alive; }
+  };
+}
+
+/* ================== Sayfa ================== */
 export default function Home() {
   const [symbols, setSymbols] = useState(DEFAULTS);
   const [interval, setIntervalStr] = useState("1m");
@@ -42,82 +95,95 @@ export default function Home() {
 
   // Arama
   const [q, setQ] = useState("");
-  const [otherSym, setOtherSym] = useState(null); // aranan coinin balina WS’i için
+  const [otherSym, setOtherSym] = useState(null);
 
-  /* ====== miniTicker WS (BTC/ETH/BNB) ====== */
+  // WS durumları (UI debug)
+  const [miniStatus, setMiniStatus] = useState("—");
+  const [btcStatus, setBtcStatus]   = useState("—");
+  const [ethStatus, setEthStatus]   = useState("—");
+  const [othStatus, setOthStatus]   = useState("—");
+
+  /* ===== miniTicker WS (BTC/ETH/BNB) ===== */
   const [tickers, setTickers] = useState({});
-  const [wsOk, setWsOk] = useState(false);
   useEffect(()=>{
     const list = DEFAULTS.map(s => s.toLowerCase()+"@miniTicker").join("/");
     const url = `wss://fstream.binance.com/stream?streams=${list}`;
-    const ws = new WebSocket(url);
-    ws.onopen = () => setWsOk(true);
-    ws.onerror = () => setWsOk(false);
-    ws.onclose = () => setWsOk(false);
-    ws.onmessage = (ev)=>{
-      try{
-        const d = JSON.parse(ev.data)?.data;
-        if(d?.e==="24hrMiniTicker"){
-          setTickers(prev => ({ ...prev, [d.s]: { last:+d.c, pct:+d.P } }));
-        }
-      }catch{}
-    };
-    return ()=>{ try{ws.close();}catch{} };
-  }, []);
 
-  /* ====== Balina WS (BTC & ETH & aranan coin) ====== */
-  const [btcFlows,setBtcFlows]=useState([]); 
-  const [ethFlows,setEthFlows]=useState([]);
-  const [othFlows,setOthFlows]=useState([]);
-
-  useEffect(()=>{
-    const make = (sym,setter)=>{
-      const url=`wss://fstream.binance.com/stream?streams=${sym.toLowerCase()}@aggTrade`;
-      const ws = new WebSocket(url);
-      let lastP=null;
-      ws.onmessage = (ev)=>{
+    const ws = createWs({
+      url,
+      onStatus: setMiniStatus,
+      onMessage: (ev) => {
         try{
-          const d=JSON.parse(ev.data)?.data; if(!d) return;
-          const price=+d.p, qty=+d.q, usd=price*qty;
-          if(usd>=200000){ // ≥ $200k
-            let side = d.m ? "SELL" : "BUY";
-            if(lastP!=null && price>lastP) side="BUY";
-            if(lastP!=null && price<lastP) side="SELL";
-            lastP=price;
-            setter(arr=>[{t:Date.now(), side, price, qty, usd}, ...arr].slice(0,20));
+          const payload = JSON.parse(ev.data);
+          const d = payload?.data;
+          if(d?.e==="24hrMiniTicker"){
+            setTickers(prev => ({ ...prev, [d.s]: { last:+d.c, pct:+d.P } }));
           }
         }catch{}
-      };
-      return ws;
+      }
+    });
+
+    return ()=> ws.close();
+  }, []);
+
+  /* ===== Whale WS: BTC & ETH sabit ===== */
+  const [btcFlows,setBtcFlows]=useState([]); 
+  const [ethFlows,setEthFlows]=useState([]);
+  useEffect(()=>{
+    const make = (sym,setter,setStatus)=>{
+      const url=`wss://fstream.binance.com/stream?streams=${sym.toLowerCase()}@aggTrade`;
+      return createWs({
+        url,
+        onStatus: setStatus,
+        onMessage: (ev)=>{
+          try{
+            const payload = JSON.parse(ev.data);
+            const d=payload?.data; if(!d) return;
+            const price=+d.p, qty=+d.q, usd=price*qty;
+            if(usd>=WHALE_MIN_USD){
+              // m: true -> seller is maker → genelde satış yönü
+              const side = d.m ? "SELL" : "BUY";
+              setter(arr=>[{t:Date.now(), side, price, qty, usd}, ...arr].slice(0,50));
+            }
+          }catch{}
+        }
+      });
     };
-    const w1=make("BTCUSDT",setBtcFlows);
-    const w2=make("ETHUSDT",setEthFlows);
-    return ()=>{ try{w1.close();}catch{} try{w2.close();}catch{} };
+    const w1=make("BTCUSDT",setBtcFlows,setBtcStatus);
+    const w2=make("ETHUSDT",setEthFlows,setEthStatus);
+    return ()=>{ w1.close(); w2.close(); };
   },[]);
 
-  // Aranan coinin WS’i (only when otherSym set)
+  /* ===== Whale WS: Aranan coin dinamik ===== */
+  const [othFlows,setOthFlows]=useState([]);
+  const othRef = useRef(null);
   useEffect(()=>{
-    if(!otherSym){ setOthFlows([]); return; }
+    // önce eski ws’i kapat
+    if(othRef.current){ othRef.current.close(); othRef.current=null; }
+    setOthFlows([]); setOthStatus(otherSym ? "connecting" : "—");
+    if(!otherSym) return;
+
     const url=`wss://fstream.binance.com/stream?streams=${otherSym.toLowerCase()}@aggTrade`;
-    const ws = new WebSocket(url);
-    let lastP=null;
-    ws.onmessage = (ev)=>{
-      try{
-        const d=JSON.parse(ev.data)?.data; if(!d) return;
-        const price=+d.p, qty=+d.q, usd=price*qty;
-        if(usd>=200000){
-          let side = d.m ? "SELL" : "BUY";
-          if(lastP!=null && price>lastP) side="BUY";
-          if(lastP!=null && price<lastP) side="SELL";
-          lastP=price;
-          setOthFlows(arr=>[{t:Date.now(), side, price, qty, usd}, ...arr].slice(0,20));
-        }
-      }catch{}
-    };
-    return ()=>{ try{ws.close();}catch{} };
+    const ws = createWs({
+      url,
+      onStatus: setOthStatus,
+      onMessage: (ev)=>{
+        try{
+          const payload = JSON.parse(ev.data);
+          const d=payload?.data; if(!d) return;
+          const price=+d.p, qty=+d.q, usd=price*qty;
+          if(usd>=WHALE_MIN_USD){
+            const side = d.m ? "SELL" : "BUY";
+            setOthFlows(arr=>[{t:Date.now(), side, price, qty, usd}, ...arr].slice(0,50));
+          }
+        }catch{}
+      }
+    });
+    othRef.current = ws;
+    return ()=> { try{ ws.close(); }catch{} };
   }, [otherSym]);
 
-  /* ====== Indicator fetch ====== */
+  /* ===== REST indikatör fetch (9sn) ===== */
   async function load() {
     try {
       setLoading(true);
@@ -139,14 +205,13 @@ export default function Home() {
     return ()=> clearInterval(timer.current);
   }, [auto, interval, symbols]);
 
-  /* ====== Search ====== */
+  /* ===== Arama ===== */
   function onSearch(){
     if(!q) return;
-    const s = q.trim().toUpperCase();
-    if(!s) return;
+    const s = q.trim().toUpperCase(); if(!s) return;
     const sym = s.endsWith("USDT") ? s : (s + "USDT");
-    setSymbols([sym]);       // sadece aranan coin listelensin
-    setOtherSym(sym);        // balina akışı üçüncü kartta
+    setSymbols([sym]);
+    setOtherSym(sym); // balina akışını da aç
   }
   function onReset(){
     setSymbols(DEFAULTS);
@@ -156,7 +221,7 @@ export default function Home() {
 
   return (
     <main style={{padding:"16px 18px"}}>
-      {/* Üst satır */}
+      {/* Üst bar (sayfa içi) */}
       <div style={{display:"flex", gap:12, alignItems:"center", marginBottom:12, flexWrap:"wrap"}}>
         <h1 style={{margin:0, fontSize:20}}>KriptoGözÜ • Genel Panel</h1>
         <span style={{opacity:.7}}>(kartlarda özet • detay için tıkla)</span>
@@ -168,17 +233,10 @@ export default function Home() {
 
         <input value={q} onChange={e=>setQ(e.target.value)} placeholder="BTC, ETH, SOL…"
                style={{padding:"8px 10px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#e6e6e6"}}/>
-        <button onClick={onSearch}
-          style={{padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700, cursor:"pointer"}}>
-          Ara
-        </button>
+        <button onClick={onSearch} style={btn}>Ara</button>
 
-        <button onClick={onReset}
-          style={{padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700, cursor:"pointer"}}>
-          Sıfırla
-        </button>
-        <button onClick={load} disabled={loading}
-          style={{padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700, cursor:"pointer"}}>
+        <button onClick={onReset} style={btn}>Sıfırla</button>
+        <button onClick={load} disabled={loading} style={btn}>
           {loading? "Yükleniyor…" : "Yenile"}
         </button>
 
@@ -188,7 +246,7 @@ export default function Home() {
         </label>
       </div>
 
-      {/* BTC/ETH/BNB miniTicker özet (WS) */}
+      {/* miniTicker WS özet */}
       <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:8, marginBottom:12}}>
         {DEFAULTS.map(sym=>{
           const t = tickers[sym] || {};
@@ -207,28 +265,28 @@ export default function Home() {
         })}
       </div>
 
-      {/* Balina Akışları (BTC / ETH / Aranan Coin varsa) */}
-      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))", gap:10, marginBottom:12}}>
-        <WhaleCard title="BTC Whale (≥ $200k)" data={btcFlows}/>
-        <WhaleCard title="ETH Whale (≥ $200k)" data={ethFlows}/>
-        {otherSym && <WhaleCard title={`${otherSym} Whale (≥ $200k)`} data={othFlows}/>}
+      {/* Balina Akışları (WS) */}
+      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))", gap:10, marginBottom:12}}>
+        <WhaleCard title="BTC Whale (≥ $200k)" data={btcFlows} status={btcStatus}/>
+        <WhaleCard title="ETH Whale (≥ $200k)" data={ethFlows} status={ethStatus}/>
+        {otherSym && <WhaleCard title={`${otherSym} Whale (≥ $200k)`} data={othFlows} status={othStatus}/>}
       </div>
 
-      {/* Kartlar */}
+      {/* Kartlar (REST + WS ile güncellenen bias) */}
       <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))", gap:12}}>
         {symbols.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
       </div>
 
-      {/* Sistem bilgisi */}
-      <div style={{marginTop:12, fontSize:12, opacity:.75}}>
-        WS: {wsOk? "bağlı":"—"} • Son güncelleme: {new Date().toLocaleTimeString("tr-TR")}
+      {/* WS durum mini göstergesi */}
+      <div style={{position:"fixed", right:10, bottom:10, fontSize:12, opacity:.8, background:"#111730",
+                   border:"1px solid #223054", borderRadius:8, padding:"6px 8px"}}>
+        miniTicker: <b>{miniStatus}</b> • btc: <b>{btcStatus}</b> • eth: <b>{ethStatus}</b> {otherSym? <>• {otherSym}: <b>{othStatus}</b></> : null}
       </div>
     </main>
   );
 }
 
-/* ====== Components ====== */
-
+/* ================== UI Bileşenleri ================== */
 function CoinCard({ sym, row }) {
   const L = row?.latest || {};
   const close = L?.close;
@@ -269,11 +327,14 @@ function CoinCard({ sym, row }) {
   );
 }
 
-function WhaleCard({ title, data }){
+function WhaleCard({ title, data, status }){
   return (
     <div style={{background:"#121a33", border:"1px solid #202945", borderRadius:10, padding:10}}>
-      <div style={{fontWeight:800, color:"#9bd0ff", marginBottom:6}}>{title}</div>
-      <div style={{maxHeight:200, overflowY:"auto"}}>
+      <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6}}>
+        <div style={{fontWeight:800, color:"#9bd0ff"}}>{title}</div>
+        <div style={{fontSize:12, opacity:.75}}>WS: {status}</div>
+      </div>
+      <div style={{maxHeight:220, overflowY:"auto"}}>
         {(!data || data.length===0) && <div style={{opacity:.7}}>Henüz akış yok…</div>}
         {data.map((it,idx)=>(
           <div key={idx} style={{display:"grid",gridTemplateColumns:"76px 1fr 1fr",gap:8,padding:"6px 0",borderTop:"1px solid #1f2742"}}>
@@ -286,3 +347,5 @@ function WhaleCard({ title, data }){
     </div>
   );
 }
+
+const btn = {padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700, cursor:"pointer"};
