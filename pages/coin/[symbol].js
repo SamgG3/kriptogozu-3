@@ -263,7 +263,7 @@ export default function CoinDetail() {
   const symbol = useMemo(() => {
     if (!symbolParam) return null;
     const raw = String(symbolParam).toUpperCase();
-    return raw.endsWith("USDT") ? raw : ${raw}USDT;
+    return raw.endsWith("USDT") ? raw : `${raw}USDT`;
   }, [symbolParam]);
 
   const [interval, setIntervalStr] = useState("1m");
@@ -285,7 +285,7 @@ export default function CoinDetail() {
   async function getCandles(sym, intv, limit=300){
     // 1) backend
     try{
-      const r = await fetch(/api/futures/indicators?symbol=${sym}&interval=${intv}&limit=${limit}, {cache:"no-store"});
+      const r = await fetch(`/api/futures/indicators?symbol=${sym}&interval=${intv}&limit=${limit}`, {cache:"no-store"});
       const j = await r.json();
       if (Array.isArray(j?.candles) && j.candles.length){
         const H=j.candles.map(c=>+c.high), L=j.candles.map(c=>+c.low), C=j.candles.map(c=>+c.close), V=j.candles.map(c=>+c.volume ?? 0);
@@ -297,7 +297,7 @@ export default function CoinDetail() {
       }
     }catch(e){/* fall back */}
     // 2) binance klines fallback
-    const u = https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${intv}&limit=${limit};
+    const u = `https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${intv}&limit=${limit}`;
     const r2 = await fetch(u); const a = await r2.json();
     if (Array.isArray(a)){
       const H=a.map(x=>+x[2]), L=a.map(x=>+x[3]), C=a.map(x=>+x[4]), V=a.map(x=>+x[5]);
@@ -352,7 +352,7 @@ export default function CoinDetail() {
     if(!symbol) return;
     try{
       if (priceWS.current) { try{priceWS.current.close();}catch{} priceWS.current=null; }
-      const url = wss://fstream.binance.com/stream?streams=${symbol.toLowerCase()}@miniTicker;
+      const url = `wss://fstream.binance.com/stream?streams=${symbol.toLowerCase()}@miniTicker`;
       const ws = new WebSocket(url); priceWS.current = ws;
       ws.onopen = ()=> setWsUp(true);
       ws.onclose = ()=> setWsUp(false);
@@ -372,7 +372,7 @@ export default function CoinDetail() {
     if(!symbol) return;
     try{
       if (flowWS.current) { try{flowWS.current.close();}catch{} flowWS.current=null; }
-      const url = wss://fstream.binance.com/stream?streams=${symbol.toLowerCase()}@aggTrade;
+      const url = `wss://fstream.binance.com/stream?streams=${symbol.toLowerCase()}@aggTrade`;
       const ws = new WebSocket(url); flowWS.current = ws;
       let lastPrice = null;
       ws.onmessage = (ev)=>{
@@ -534,6 +534,6 @@ function Row({ name, v, d=2 }) {
     <tr>
       <td style={{ opacity:.85 }}>{name}</td>
       <td style={{ textAlign:"right", fontWeight:700 }}>{fmtPrice(v ?? (typeof v==="number"?v:null))}</td>
-    </tr>
-  );
+    </tr>
+  );
 }
