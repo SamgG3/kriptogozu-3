@@ -3,21 +3,25 @@ import { useRouter } from "next/router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
-/* ========== Helpers ========== */
+/* ================== Helpers ================== */
 const fmt = (v, d = 2) =>
   v == null || isNaN(v)
     ? "—"
     : Number(v).toLocaleString("tr-TR", { minimumFractionDigits: d, maximumFractionDigits: d });
+
 const fmtPrice = (v) => {
   if (v == null || isNaN(v)) return "—";
   const a = Math.abs(v);
   const d = a >= 100 ? 2 : a >= 1 ? 4 : 6;
   return Number(v).toLocaleString("tr-TR", { minimumFractionDigits: d, maximumFractionDigits: d });
 };
+
 const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
 const tp = (h, l, c) => (h + l + c) / 3;
 
-/* ========== Core array math / Indicators ========== */
+const unique = (arr) => Array.from(new Set(arr));
+
+/* ================== Math / Indicators ================== */
 const SMA = (arr, p) => {
   const n = arr?.length || 0;
   const out = new Array(n).fill(null);
@@ -108,25 +112,57 @@ const ATR = (hi, lo, cl, p = 14) => {
   for (let i = p + 1; i < n; i++) out[i] = (out[i - 1] * (p - 1) + tr[i]) / p;
   return out;
 };
-/* StochRSI (K/D) */
-const StochRSI = (cl, rsiPeriod = 14, kPeriod = 14, dPeriod = 3) => {
-  const r = RSI(cl, rsiPeriod);
-  const n = r.length;
-  const K = new Array(n).fill(null), D = new Array(n).fill(null);
-  for (let i = kPeriod; i < n; i++) {
-    const window = r.slice(i - kPeriod + 1, i + 1).filter(x=>x!=null);
-    if (window.length < kPeriod) { K[i] = null; continue; }
-    const min = Math.min(...window), max = Math.max(...window);
-    K[i] = max === min ? 50 : ((r[i] - min) / (max - min)) * 100;
+const ADX = (hi, lo, cl, p = 14) => {
+  const n = cl?.length || 0, out = new Array(n).fill(null);
+  if (!hi || !lo || !cl || n < p + 1) return out;
+  const tr = new Array(n).fill(0), plusDM = new Array(n).fill(0), minusDM = new Array(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    const up = hi[i] - hi[i - 1], dn = lo[i - 1] - lo[i];
+    plusDM[i] = up > dn && up > 0 ? up : 0;
+    minusDM[i] = dn > up && dn > 0 ? dn : 0;
+    tr[i] = Math.max(hi[i] - lo[i], Math.abs(hi[i] - cl[i - 1]), Math.abs(lo[i] - cl[i - 1]));
   }
+  let atr = 0, pDM = 0, mDM = 0;
+  for (let i = 1; i <= p; i++) { atr += tr[i]; pDM += plusDM[i]; mDM += minusDM[i]; }
+  let pDI = 100 * (pDM / atr), mDI = 100 * (mDM / atr);
+  let dx = 100 * (Math.abs(pDI - mDI) / ((pDI + mDI) || 1)), adx = dx;
+  out[p] = adx;
+  for (let i = p + 1; i < n; i++) {
+    atr = atr - atr / p + tr[i];
+    pDM = pDM - pDM / p + plusDM[i];
+    mDM = mDM - mDM / p + minusDM[i];
+    pDI = 100 * (pDM / (atr || 1)); mDI = 100 * (mDM / (atr || 1));
+    dx = 100 * (Math.abs(pDI - mDI) / ((pDI + mDI) || 1));
+    adx = ((out[i - 1] ?? dx) * (p - 1) + dx) / p; out[i] = adx;
+  }
+  return out;
+};
+const MFI = (hi, lo, cl, vol, p = 14) => {
+  const n = cl?.length || 0, out = new Array(n).fill(null);
+  if (!hi || !lo || !cl || !vol || n < p + 1) return out;
+  for (let i = p; i < n; i++) {
+    let pos = 0, neg = 0;
+    for (let j = i - p + 1; j <= i; j++) {
+      const cur = tp(hi[j], lo[j], cl[j]), prev = tp(hi[j - 1], lo[j - 1], cl[j - 1]);
+      const mf = cur * vol[j];
+      if (cur > prev) pos += mf; else if (cur < prev) neg += mf;
+    }
+    const ratio = neg === 0 ? Infinity : pos / neg;
+    out[i] = 100 - 100 / (1 + ratio);
+  }
+  return out;
+};
+const VWAP = (hi, lo, cl, vol) => {
+  const n = cl?.length || 0, out = new Array(n).fill(null);
+  if (!hi || !lo || !cl || !vol) return out;
+  let cumPV = 0, cumV = 0;
   for (let i = 0; i < n; i++) {
-    let s=0,c=0; for(let j=i-dPeriod+1;j<=i;j++){ if(j>=0 && K[j]!=null){ s+=K[j]; c++; } }
-    D[i] = c ? s/c : null;
+    const _tp = tp(hi[i], lo[i], cl[i]); cumPV += _tp * vol[i]; cumV += vol[i]; out[i] = cumV ? cumPV / cumV : null;
   }
-  return { K, D };
+  return out;
 };
 
-/* ========== SR & Trend helpers ========== */
+/* ================== SR / Trend / Resample ================== */
 const swingsFromCloses = (cl, look = 3) => {
   const highs = [], lows = [];
   for (let i = look; i < cl.length - look; i++) {
@@ -137,42 +173,33 @@ const swingsFromCloses = (cl, look = 3) => {
   }
   return { highs, lows };
 };
-/* EMA20 kırılım + EMA50/200 teyidi */
-const trendEval = (closes) => {
-  if (!closes || closes.length < 210) return "—";
-  const ema20 = EMA(closes,20), ema50 = EMA(closes,50), ema200 = EMA(closes,200);
-  const c = closes.at(-1), p = closes.at(-2);
-  const e20 = ema20.at(-1), e20p = ema20.at(-2);
-  const e50 = ema50.at(-1), e200 = ema200.at(-1);
-  if (c==null || p==null || e20==null || e20p==null || e50==null || e200==null) return "—";
-  const slope20 = e20 - e20p;
-  if (c > e20 && slope20 >= 0) {
-    if (e20 >= e50 && e50 >= e200) return "Güçlü Yukarı";
-    return "Zayıf Yukarı";
-  }
-  if (c < e20 && slope20 <= 0) {
-    if (e20 <= e50 && e50 <= e200) return "Güçlü Aşağı";
-    return "Zayıf Aşağı";
-  }
+const trendBreakEMA = (closes) => {
+  if (!closes || closes.length < 22) return "—";
+  const ema20 = EMA(closes, 20);
+  const c = closes.at(-1), p = closes.at(-2), e = ema20.at(-1), pe = ema20.at(-2);
+  if (c == null || p == null || e == null || pe == null) return "—";
+  const slope = e - pe;
+  if (c > e && p <= pe && slope >= 0) return "Yukarı";
+  if (c < e && p >= pe && slope <= 0) return "Aşağı";
   return "Net değil";
 };
-/* Yön yüzdesi (Long/Short) */
-const longShortPct = (close, ema20, rsi, stK, stD, bbUp, bbLo) => {
-  const emaDist = close!=null && ema20!=null ? ((close-ema20)/ema20)*100 : null;
-  const kx = stK!=null && stD!=null ? (stK - stD) : null;
-  const bandPos = (bbUp!=null && bbLo!=null && close!=null) ? ((close-bbLo)/(bbUp-bbLo))*100 : null;
-  const nEMA  = emaDist==null?0: clamp(emaDist/3, -1, 1);
-  const nRSI  = rsi==null?0: clamp((rsi-50)/25, -1, 1);
-  const nKxD  = kx==null?0: clamp(kx/50, -1, 1);
-  const nBand = bandPos==null?0: clamp((bandPos-50)/30, -1, 1);
-  const wEMA=0.35, wRSI=0.30, wKxD=0.20, wBand=0.15;
-  const score = wEMA*nEMA + wRSI*nRSI + wKxD*nKxD + wBand*nBand; // -1..+1
-  const longPct = Math.round(((score+1)/2)*100);
-  const shortPct = 100 - longPct;
-  return { longPct, shortPct };
+const biasByEMA = (closes) => {
+  if (!closes || closes.length < 22) return "—";
+  const ema20 = EMA(closes, 20);
+  const c = closes.at(-1), e = ema20.at(-1), slope = e - ema20.at(-2);
+  if (c > e && slope >= 0) return "LONG";
+  if (c < e && slope <= 0) return "SHORT";
+  return "NÖTR";
+};
+// Günlük diziden sentetik gruplama (hafta/ay vb.)
+const resampleCloses = (dailyCloses, groupN) => {
+  if (!dailyCloses?.length || groupN <= 1) return dailyCloses;
+  const out = [];
+  for (let i = 0; i < dailyCloses.length; i += groupN) out.push(dailyCloses[Math.min(i + groupN - 1, dailyCloses.length - 1)]);
+  return out;
 };
 
-/* ========== React ========== */
+/* ================== React ================== */
 export default function CoinDetail() {
   const router = useRouter();
   const symbolParam = router.query.symbol;
@@ -182,21 +209,22 @@ export default function CoinDetail() {
     return raw.endsWith("USDT") ? raw : `${raw}USDT`;
   }, [symbolParam]);
 
+  // seçili interval (grafik hesapları)
   const [interval, setIntervalStr] = useState("1m");
 
-  // price WS
+  // canlı fiyat
   const [tick, setTick] = useState({ last: null, chg: null });
   const [wsUp, setWsUp] = useState(false);
   const priceWS = useRef(null);
 
-  // main data
+  // ana interval verisi (cl/h/l/v) + indikatör son değerleri
   const [main, setMain] = useState(null);
   const [indLast, setIndLast] = useState(null);
 
-  // trend grid TFs
-  const TREND_TFS = ["1m","3m","5m","15m","30m","1h","4h","1d"];
-  const [trendMap, setTrendMap] = useState({});
-  const [biasMap, setBiasMap] = useState({});
+  // MTF (multi-timeframe) closes haritaları
+  const [mtf, setMtf] = useState({}); // { "1m": closes[], "3m": closes[], ... , "1d": closes[] }
+  const [trend, setTrend] = useState({}); // { "5m": "Yukarı/..." , ... }
+  const [bias, setBias] = useState({});   // { "1m": "LONG/SHORT/..." , ... }
 
   // Whale flow (>=100k)
   const [flows, setFlows] = useState([]);
@@ -210,11 +238,11 @@ export default function CoinDetail() {
     const j = await r.json();
     if (Array.isArray(j?.candles) && j.candles.length) {
       const H = j.candles.map(c => +c.high), L = j.candles.map(c => +c.low), C = j.candles.map(c => +c.close), V = j.candles.map(c => +c.volume ?? 0);
-      return { H, L, C, V };
+      return { H, L, C, V, latest: j.latest, prev: j.prev };
     }
     if (Array.isArray(j?.closes) && j.closes.length) {
       const H = j.highs?.map(Number), L = j.lows?.map(Number), C = j.closes.map(Number), V = j.volume?.map(Number);
-      return { H, L, C, V };
+      return { H, L, C, V, latest: j.latest, prev: j.prev };
     }
     return null;
   }
@@ -227,7 +255,10 @@ export default function CoinDetail() {
     return { H, L, C, V };
   }
   async function getCandles(sym, intv, limit = 300) {
-    try { const b = await fromBackend(sym, intv, limit); if (b) return b; } catch {}
+    try {
+      const b = await fromBackend(sym, intv, limit);
+      if (b) return b;
+    } catch {}
     return await fromBinance(sym, intv, limit);
   }
 
@@ -236,59 +267,69 @@ export default function CoinDetail() {
     if (!symbol) return;
     const d = await getCandles(symbol, interval, 300);
     if (!d) return;
-    setMain({ highs: d.H, lows: d.L, closes: d.C, volume: d.V });
-
-    // indicators on main interval (last values)
-    const ema20 = EMA(d.C, 20);
-    const { K: stK, D: stD } = Stoch(d.H, d.L, d.C, 14, 3);
-    const { up: bbU, low: bbL } = Bollinger(d.C, 20, 2);
+    setMain({ highs: d.H, lows: d.L, closes: d.C, volume: d.V, latest: d.latest, prev: d.prev });
+    // indicators on main interval
+    const ema20 = EMA(d.C, 20), ema50 = EMA(d.C, 50), ema200 = EMA(d.C, 200);
     const rsi14 = RSI(d.C, 14);
-    const { K: srsiK, D: srsiD } = StochRSI(d.C, 14, 14, 3);
+    const { K: stochK, D: stochD } = Stoch(d.H, d.L, d.C, 14, 3);
+    const { up: bbUpper, low: bbLower } = Bollinger(d.C, 20, 2);
+    const { macd, signal: macdSig, hist: macdHist } = MACD(d.C, 12, 26, 9);
+    const atr14 = ATR(d.H, d.L, d.C, 14);
+    const adx14 = ADX(d.H, d.L, d.C, 14);
+    const mfi14 = d.V ? MFI(d.H, d.L, d.C, d.V, 14) : new Array(d.C.length).fill(null);
+    const vwap = d.V ? VWAP(d.H, d.L, d.C, d.V) : new Array(d.C.length).fill(null);
 
     setIndLast({
       sma20: SMA(d.C, 20).at(-1), sma50: SMA(d.C, 50).at(-1), sma200: SMA(d.C, 200).at(-1),
-      ema20: ema20.at(-1), ema50: EMA(d.C, 50).at(-1), ema200: EMA(d.C, 200).at(-1),
-      rsi14: rsi14.at(-1), stochK: stK.at(-1), stochD: stD.at(-1),
-      stochRsiK: srsiK.at(-1), stochRsiD: srsiD.at(-1),
-      bbUpper: bbU.at(-1), bbLower: bbL.at(-1),
-      macd: MACD(d.C, 12, 26, 9).macd.at(-1),
-      macdSig: MACD(d.C, 12, 26, 9).signal.at(-1),
-      macdHist: MACD(d.C, 12, 26, 9).hist.at(-1),
-      atr14: ATR(d.H, d.L, d.C, 14).at(-1),
+      ema20: ema20.at(-1), ema50: ema50.at(-1), ema200: ema200.at(-1),
+      rsi14: rsi14.at(-1), stochK: stochK.at(-1), stochD: stochD.at(-1),
+      bbUpper: bbUpper.at(-1), bbLower: bbLower.at(-1),
+      macd: macd.at(-1), macdSig: macdSig.at(-1), macdHist: macdHist.at(-1),
+      atr14: atr14.at(-1), adx14: adx14.at(-1), mfi14: mfi14.at(-1), vwap: vwap.at(-1),
     });
   }
 
-  /* ----- Load Trend Grid (12s) ----- */
-  async function loadTrends() {
+  /* ----- Load MTF (12s) ----- */
+  const trendTFs = ["5m", "15m", "1h", "4h", "1d"];
+  const biasTFs = ["1m","3m","5m","15m","30m","1h","2h","3h","4h","12h","1d","3d","1w","3w","1M","3M","6M","12M"];
+  const nativeTFs = ["1m","3m","5m","15m","30m","1h","2h","3h","4h","12h","1d"]; // Binance native
+  async function loadMTF() {
     if (!symbol) return;
-    const pairs = await Promise.all(TREND_TFS.map(async tf => {
+    // fetch native closes in parallel
+    const pairs = await Promise.all(nativeTFs.map(async tf => {
       const d = await getCandles(symbol, tf, 300);
       return [tf, d?.C || []];
     }));
     const map = Object.fromEntries(pairs);
+    setMtf(map);
 
+    // trend (EMA20 kırılımları) – doğrudan native kullan, 1d zaten var
     const t = {};
+    for (const tf of trendTFs) t[tf] = trendBreakEMA(map[tf]);
+    // bias grid
     const b = {};
-    for (const tf of TREND_TFS) {
-      const closes = map[tf];
-      t[tf] = trendEval(closes);
-      // bias for matrix (LONG/SHORT/NÖTR)
-      if (!closes || closes.length < 22) b[tf] = "—";
-      else {
-        const ema20 = EMA(closes, 20);
-        const c = closes.at(-1), e = ema20.at(-1), slope = e - ema20.at(-2);
-        b[tf] = c > e && slope >= 0 ? "LONG" : c < e && slope <= 0 ? "SHORT" : "NÖTR";
-      }
-    }
-    setTrendMap(t);
-    setBiasMap(b);
+    // dak/h saat/gün native
+    for (const tf of nativeTFs) b[tf] = biasByEMA(map[tf]);
+    // sentetik: 3d, 1w, 3w, 1M, 3M, 6M, 12M (günlükten üret)
+    const daily = map["1d"] || [];
+    const make = (label, n) => (b[label] = biasByEMA(resampleCloses(daily, n)));
+    make("3d", 3);
+    make("1w", 7);
+    make("3w", 21);
+    make("1M", 30);
+    make("3M", 90);
+    make("6M", 180);
+    make("12M", 365);
+
+    setTrend(t);
+    setBias(b);
   }
 
   /* ----- Timers ----- */
   useEffect(() => { loadMain(); }, [symbol, interval]);
   useEffect(() => { const t = setInterval(loadMain, 3000); return () => clearInterval(t); }, [symbol, interval]);
-  useEffect(() => { loadTrends(); }, [symbol]);
-  useEffect(() => { const t = setInterval(loadTrends, 12000); return () => clearInterval(t); }, [symbol]);
+  useEffect(() => { loadMTF(); }, [symbol]);
+  useEffect(() => { const t = setInterval(loadMTF, 12000); return () => clearInterval(t); }, [symbol]);
 
   /* ----- WS price ----- */
   useEffect(() => {
@@ -307,7 +348,9 @@ export default function CoinDetail() {
         } catch {}
       };
       return () => { try { ws.close(); } catch {} };
-    } catch { setWsUp(false); }
+    } catch {
+      setWsUp(false);
+    }
   }, [symbol]);
 
   /* ----- WS whale flow (>=100k USD) ----- */
@@ -336,7 +379,7 @@ export default function CoinDetail() {
     } catch {}
   }, [symbol]);
 
-  /* ----- SR & TP/SL + Long/Short yüzdeleri ----- */
+  /* ----- SR & TP/SL ----- */
   const sr = useMemo(() => {
     const C = main?.closes || [];
     const price = entry;
@@ -353,18 +396,7 @@ export default function CoinDetail() {
   const longSL = sr.supports[0] ?? null;
   const shortSL = sr.resistances[0] ?? null;
 
-  const LSP = useMemo(() => {
-    if (!main?.closes?.length) return { longPct: 50, shortPct: 50 };
-    const close = entry;
-    const ema20 = indLast?.ema20;
-    const rsi = indLast?.rsi14;
-    const stK = indLast?.stochK;
-    const stD = indLast?.stochD;
-    const bbU = indLast?.bbUpper;
-    const bbL = indLast?.bbLower;
-    return longShortPct(close, ema20, rsi, stK, stD, bbU, bbL);
-  }, [indLast, entry, main?.closes]);
-
+  /* ----- UI ----- */
   return (
     <main style={{ padding: "14px 16px", fontSize: 14, lineHeight: 1.35 }}>
       {/* Header */}
@@ -381,23 +413,23 @@ export default function CoinDetail() {
         <span style={{ marginLeft: "auto" }}>
           <select value={interval} onChange={(e) => setIntervalStr(e.target.value)}
             style={{ padding: "6px 8px", background: "#121625", border: "1px solid #23283b", borderRadius: 8, color: "#e6e6e6" }}>
-            {["1m","3m","5m","15m","30m","1h","4h","1d"].map(x => <option key={x} value={x}>{x}</option>)}
+            {["1m", "3m", "5m", "15m", "30m", "1h", "2h", "3h", "4h", "12h", "1d"].map(x => <option key={x} value={x}>{x}</option>)}
           </select>
         </span>
       </div>
 
-      {/* Trend kırılımları */}
-      <Box title="Trend Kırılımları (EMA20 + EMA50/200 teyit)">
+      {/* Trend kırılımları (5m,15m,1h,4h,1d) */}
+      <Box title="Trend Kırılımları (EMA20)">
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
-          {["1m","3m","5m","15m","30m","1h","4h","1d"].map(tf => (
-            <Chip key={tf} label={tf.toUpperCase()} val={trendMap[tf]} />
+          {["5m","15m","1h","4h","1d"].map(tf => (
+            <Chip key={tf} label={tf.toUpperCase()} val={trend[tf]} />
           ))}
         </div>
       </Box>
 
-      {/* Entry / TP / SL + Long/Short oran başlıkta */}
+      {/* Entry / TP / SL */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10, marginBottom: 10 }}>
-        <Box title={`Long (${fmt(LSP.longPct,0)}%) — Entry / TP / SL`}>
+        <Box title="Entry / TP / SL (Long)">
           <div>Entry: <b>{fmtPrice(entry)}</b></div>
           <ul style={{ margin: "6px 0 0 18px" }}>
             <li>TP1: {fmtPrice(longTP[0])}</li>
@@ -406,7 +438,7 @@ export default function CoinDetail() {
             <li>SL:  {fmtPrice(longSL)}</li>
           </ul>
         </Box>
-        <Box title={`Short (${fmt(LSP.shortPct,0)}%) — Entry / TP / SL`}>
+        <Box title="Entry / TP / SL (Short)">
           <div>Entry: <b>{fmtPrice(entry)}</b></div>
           <ul style={{ margin: "6px 0 0 18px" }}>
             <li>TP1: {fmtPrice(shortTP[0])}</li>
@@ -421,7 +453,7 @@ export default function CoinDetail() {
         </Box>
       </div>
 
-      {/* İndikatörler (kompakt) + Akış yan yana */}
+      {/* İndikatörler (kompakt tablo) + Akış yan yana */}
       <div style={{ display: "grid", gridTemplateColumns: "minmax(280px, 1fr) minmax(320px, 1fr)", gap: 10, alignItems: "start" }}>
         <Box title="İndikatörler (son)">
           <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
@@ -435,14 +467,15 @@ export default function CoinDetail() {
               {IndRow("RSI14", indLast?.rsi14, 2)}
               {IndRow("Stoch K", indLast?.stochK, 2)}
               {IndRow("Stoch D", indLast?.stochD, 2)}
-              {IndRow("StochRSI K", indLast?.stochRsiK, 2)}
-              {IndRow("StochRSI D", indLast?.stochRsiD, 2)}
               {IndRow("MACD", indLast?.macd, 4)}
               {IndRow("MACD Sig", indLast?.macdSig, 4)}
               {IndRow("MACD Hist", indLast?.macdHist, 4)}
               {IndRow("BB Üst", indLast?.bbUpper)}
               {IndRow("BB Alt", indLast?.bbLower)}
               {IndRow("ATR14", indLast?.atr14, 4)}
+              {IndRow("ADX14", indLast?.adx14, 2)}
+              {IndRow("MFI14", indLast?.mfi14, 2)}
+              {IndRow("VWAP", indLast?.vwap)}
             </tbody>
           </table>
         </Box>
@@ -462,12 +495,14 @@ export default function CoinDetail() {
         </Box>
       </div>
 
-      {/* Yön Matrisi (hafta/ay yok) */}
+      {/* Yön Matrisi */}
       <Box title="Yön Matrisi (EMA20 tabanlı)">
         <div style={{ display: "grid", gap: 10 }}>
-          <RowMatrix label="Dakika" list={["1m","3m","5m","15m","30m"]} bias={biasMap} />
-          <RowMatrix label="Saat"   list={["1h","4h"]}  bias={biasMap} />
-          <RowMatrix label="Gün"    list={["1d"]}       bias={biasMap} />
+          <RowMatrix label="Dakika" list={["1m","3m","5m","15m","30m"]} bias={bias} />
+          <RowMatrix label="Saat"   list={["1h","2h","3h","4h","12h"]}  bias={bias} />
+          <RowMatrix label="Gün"    list={["1d","3d"]}                  bias={bias} />
+          <RowMatrix label="Hafta"  list={["1w","3w"]}                  bias={bias} />
+          <RowMatrix label="Ay"     list={["1M","3M","6M","12M"]}       bias={bias} />
         </div>
       </Box>
 
@@ -478,7 +513,7 @@ export default function CoinDetail() {
   );
 }
 
-/* ========== Tiny UI Parts ========== */
+/* ================== Tiny UI Parts ================== */
 function Box({ title, children }) {
   return (
     <div style={{ background: "#121a33", border: "1px solid #202945", borderRadius: 10, padding: 12, color: "#e6edf6", marginBottom: 10 }}>
@@ -488,14 +523,7 @@ function Box({ title, children }) {
   );
 }
 function Chip({ label, val }) {
-  const map = {
-    "Güçlü Yukarı": "#22d39a",
-    "Zayıf Yukarı": "#7bdcb5",
-    "Güçlü Aşağı": "#ff6b6b",
-    "Zayıf Aşağı": "#ffb4b4",
-    "Net değil": "#ffb04a",
-    "—": "#9aa4b2",
-  };
+  const map = { "Yukarı": "#22d39a", "Aşağı": "#ff6b6b", "Net değil": "#ffb04a", "—": "#9aa4b2" };
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 10px", border: "1px solid #202945", borderRadius: 8 }}>
       <span style={{ opacity: .85 }}>{label}</span>
