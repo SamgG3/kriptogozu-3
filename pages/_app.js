@@ -2,17 +2,22 @@
 import dynamic from "next/dynamic";
 try { require("../styles/globals.css"); } catch {}
 
-const PriceBar   = dynamic(() => import("../components/PriceBar"),   { ssr:false });
-const TopBar     = dynamic(() => import("../components/TopBar"),     { ssr:false });
-const WhaleTicker= dynamic(() => import("../components/WhaleTicker"), { ssr:false });
+const PriceBar    = dynamic(() => import("../components/PriceBar"),    { ssr:false });
+const TopBar      = dynamic(() => import("../components/TopBar"),      { ssr:false });
+const WhaleTicker = dynamic(() => import("../components/WhaleTicker"), { ssr:false });
 
 export default function MyApp({ Component, pageProps }) {
   return (
     <>
+      {/* ÜST BANT */}
+      <WhaleTicker
+        enabled={false}
+        staticText="— TANRININ GÖZÜ - KRİPTONUN GÖZÜ —"
+      />
       <PriceBar />
       <TopBar />
       <Component {...pageProps} />
-      {/* Bant sadece metin akar (sürat aynı kalır) */}
+      {/* ALT BANT (SPK uyarısı) */}
       <WhaleTicker
         enabled={false}
         staticText="--- Tanrının Gözü - Kriptonun Gözü --- Bu kanalda paylaşılanlar SPK kuralları gereğince KESİNLİKLE yatırım tavsiyesi niteliğinde değildir."
