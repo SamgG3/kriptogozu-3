@@ -4,11 +4,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 /* ===== Helpers ===== */
+const last = (arr)=> Array.isArray(arr)&&arr.length ? arr[arr.length-1] : null;
 const fmt = (v, d = 2) => v==null||isNaN(v) ? "—" :
   Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
 const fmtPrice = (v)=>{ if(v==null||isNaN(v)) return "—"; const a=Math.abs(v); const d=a>=100?2:a>=1?4:6;
   return Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d}); };
-const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
 
 /* ===== Indicators ===== */
 const SMA=(arr,p)=>{ const n=arr?.length||0, out=new Array(n).fill(null); if(!arr||n<p) return out;
@@ -40,7 +40,7 @@ const StochRSI=(cl,rp=14,kp=14,dp=3)=>{ const r=RSI(cl,rp); const n=r.length; co
 
 /* ===== SR & Trend ===== */
 const trendEval=(closes)=>{ if(!closes||closes.length<22) return "—";
-  const e20=EMA(closes,20); const c=closes.at(-1), e=e20.at(-1), ep=e20.at(-2);
+  const e20=EMA(closes,20); const c=last(closes), e=last(e20), ep=e20[e20.length-2] ?? null;
   if([c,e,ep].some(x=>x==null)) return "—"; const slope=e-ep;
   if(c>e && slope>=0) return "LONG";
   if(c<e && slope<=0) return "SHORT";
@@ -64,14 +64,17 @@ export default function CoinDetail(){
   useEffect(()=>{
     if(!symbol) return;
     const url = `wss://fstream.binance.com/stream?streams=${symbol.toLowerCase()}@miniTicker`;
-    const ws = new WebSocket(url);
-    ws.onmessage = (ev)=>{
-      try{
-        const d = JSON.parse(ev.data)?.data;
-        if(d?.e==="24hrMiniTicker") setTick({ last:+d.c, chg:+d.P });
-      }catch{}
-    };
-    return ()=>{ try{ws.close();}catch{} };
+    let ws;
+    try{
+      ws = new WebSocket(url);
+      ws.onmessage = (ev)=>{
+        try{
+          const d = JSON.parse(ev.data)?.data;
+          if(d && d.e==="24hrMiniTicker") setTick({ last:+d.c, chg:+d.P });
+        }catch{}
+      };
+    }catch{}
+    return ()=>{ try{ws && ws.close();}catch{} };
   }, [symbol]);
 
   // indikatörleri yükle (REST)
@@ -87,10 +90,12 @@ export default function CoinDetail(){
         return {H:j.highs?.map(Number), L:j.lows?.map(Number), C:j.closes.map(Number)};
       }
     }catch{}
-    // Binance fallback
-    const u=`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${intv}&limit=${limit}`;
-    const r=await fetch(u); const a=await r.json(); if(!Array.isArray(a)) return null;
-    return {H:a.map(x=>+x[2]), L:a.map(x=>+x[3]), C:a.map(x=>+x[4])};
+    // Binance fallback (client)
+    try{
+      const u=`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${intv}&limit=${limit}`;
+      const r=await fetch(u); const a=await r.json(); if(!Array.isArray(a)) return null;
+      return {H:a.map(x=>+x[2]), L:a.map(x=>+x[3]), C:a.map(x=>+x[4])};
+    }catch{ return null; }
   }
 
   async function loadAll(){
@@ -100,25 +105,22 @@ export default function CoinDetail(){
     const ema20=EMA(d.C,20), ema50=EMA(d.C,50), ema200=EMA(d.C,200);
     const sma20=SMA(d.C,20), sma50=SMA(d.C,50), sma200=SMA(d.C,200);
     const rsi14 = RSI(d.C,14);
-    const { K:sK, D:sD }   = StochRSI(d.C,14,14,3);
-    const { K:stK, D:stD } = Stoch(d.H,d.L,d.C,14,3);
-    const { up:bbU, low:bbL } = Boll(d.C,20,2);
+    const stR = StochRSI(d.C,14,14,3);
+    const stK = Stoch(d.H,d.L,d.C,14,3);
+    const bb  = Boll(d.C,20,2);
     const mac = MACD(d.C,12,26,9);
     const atr14 = ATR(d.H,d.L,d.C,14);
 
     setInd({
-      // SMA/EMA
-      sma20:sma20.at(-1), sma50:sma50.at(-1), sma200:sma200.at(-1),
-      ema20:ema20.at(-1), ema50:ema50.at(-1), ema200:ema200.at(-1),
-      // Momentum
-      rsi14:rsi14.at(-1),
-      stochRsiK:sK.at(-1), stochRsiD:sD.at(-1),
-      stochK:stK.at(-1), stochD:stD.at(-1),
-      // BB / MACD / ATR
-      bbUpper:bbU.at(-1), bbLower:bbL.at(-1),
-      macd:mac.macd.at(-1), macdSig:mac.signal.at(-1), macdHist:mac.hist.at(-1),
-      atr14:atr14.at(-1),
-      closes:d.C
+      sma20:last(sma20), sma50:last(sma50), sma200:last(sma200),
+      ema20:last(ema20), ema50:last(ema50), ema200:last(ema200),
+      rsi14:last(rsi14),
+      stochRsiK:last(stR.K), stochRsiD:last(stR.D),
+      stochK:last(stK.K), stochD:last(stK.D),
+      bbUpper:last(bb.up), bbLower:last(bb.low),
+      macd:last(mac.macd), macdSig:last(mac.signal), macdHist:last(mac.hist),
+      atr14:last(atr14),
+      closes: d.C
     });
   }
   useEffect(()=>{ loadAll(); }, [symbol, interval]);
@@ -128,6 +130,7 @@ export default function CoinDetail(){
   useEffect(()=>{
     let mounted=true;
     (async()=>{
+      if(!symbol) return;
       const entries = await Promise.all(TREND_TFS.map(async tf=>{
         const d = await getCandles(symbol, tf, 200);
         return [tf, d?.C || []];
@@ -143,7 +146,7 @@ export default function CoinDetail(){
     return ()=>{ mounted=false; };
   }, [symbol]);
 
-  const entry = tick.last ?? ind?.closes?.at(-1) ?? null;
+  const entry = tick.last ?? (ind?.closes ? last(ind.closes) : null);
 
   return (
     <main style={{ padding:"14px 16px", fontSize:14, lineHeight:1.35 }}>
