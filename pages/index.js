@@ -2,60 +2,84 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
-const CORE = ["BTCUSDT","ETHUSDT","BNBUSDT"];
-const ALL_TFS = ["1m","3m","5m","15m","30m","1h","2h","3h","4h","12h","1d","3d"];
+const DEFAULTS = ["BTCUSDT","ETHUSDT","BNBUSDT"];
 
-const fmt = (v,d=2)=> v==null||isNaN(v) ? "—" :
-  Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
-const fmtPrice = (v)=> {
-  if (v==null||isNaN(v)) return "—";
+const fmtPrice = (v)=>{
+  if (v==null || isNaN(v)) return "—";
   const a = Math.abs(v);
-  const d = a>=100?2:a>=1?4:6;
+  const d = a >= 100 ? 2 : a >= 1 ? 4 : 6;
   return Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
 };
-const lsGet = (k, d)=>{ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch{return d;} };
-const lsSet = (k, v)=>{ try{ localStorage.setItem(k, JSON.stringify(v)); }catch{} };
+const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
+  Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
+const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
 
-export default function Home(){
-  const [symbols, setSymbols] = useState(CORE);
+function biasFromLatest(L){
+  if(!L) return { longPct:50, shortPct:50, score:0 };
+  const close=L.close, ema=L.ema20, rsi=L.rsi14, k=L.stochK, d=L.stochD, bu=L.bbUpper, bl=L.bbLower;
+  const emaDist = (close!=null && ema!=null) ? ((close-ema)/ema*100) : null;
+  const kCross  = (k!=null && d!=null) ? (k-d) : null;
+  const bandPos = (bu!=null && bl!=null && close!=null) ? ((close-bl)/(bu-bl)*100) : null;
+  const nEMA   = emaDist==null ? 0 : clamp(emaDist/3, -1, 1);
+  const nRSI   = rsi==null ? 0 : clamp((rsi-50)/25, -1, 1);
+  const nKxD   = kCross==null ? 0 : clamp(kCross/50, -1, 1);
+  const nBand  = bandPos==null ? 0 : clamp((bandPos-50)/30, -1, 1);
+  const wEMA=0.35, wRSI=0.30, wKxD=0.20, wBand=0.15;
+  const score = (wEMA*nEMA + wRSI*nRSI + wKxD*nKxD + wBand*nBand);
+  const longPct = Math.round( (score+1)/2 * 100 );
+  const shortPct = 100 - longPct;
+  return { longPct, shortPct, score };
+}
+
+export default function Home() {
+  const [symbols, setSymbols] = useState(DEFAULTS);
   const [interval, setIntervalStr] = useState("1m");
   const [rows, setRows] = useState({});
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
-  const [fav, setFav] = useState(()=> lsGet("favSymbols", []));
-  const [wsOk, setWsOk] = useState(false);
   const timer = useRef(null);
 
-  // 24h değişim & son fiyat — miniTicker WS
-  const [tickers, setTickers] = useState({});
-  useEffect(()=>{
-    const list = CORE.map(s => s.toLowerCase()+"@miniTicker").join("/");
-    const url = `wss://fstream.binance.com/stream?streams=${list}`;
-    const ws = new WebSocket(url);
-    ws.onopen = ()=> setWsOk(true);
-    ws.onclose= ()=> setWsOk(false);
-    ws.onerror= ()=> setWsOk(false);
-    ws.onmessage = (ev)=>{
-      try{
-        const d = JSON.parse(ev.data)?.data;
-        if(d?.e==="24hrMiniTicker"){
-          setTickers(prev=>({ ...prev, [d.s]: { last:+d.c, pct:+d.P } }));
-        }
-      }catch{}
-    };
-    return ()=>{ try{ws.close();}catch{} };
-  }, []);
+  // Arama
+  const [q, setQ] = useState("");
 
-  async function load(){
-    try{
+  // BTC/ETH Whale özet (≥ 200k USD, son 10 adet)
+  const [btcFlows,setBtcFlows]=useState([]); const [ethFlows,setEthFlows]=useState([]);
+  useEffect(()=>{
+    const make = (sym,setter)=>{
+      const url=`wss://fstream.binance.com/stream?streams=${sym.toLowerCase()}@aggTrade`;
+      const ws = new WebSocket(url); let lastP=null;
+      ws.onmessage = (ev)=>{
+        try{
+          const d=JSON.parse(ev.data)?.data; if(!d) return;
+          const price=+d.p, qty=+d.q, usd=price*qty;
+          if(usd>=200000){
+            let side = d.m ? "SELL" : "BUY";
+            if(lastP!=null && price>lastP) side="BUY";
+            if(lastP!=null && price<lastP) side="SELL";
+            lastP=price;
+            setter(arr=>[{t:Date.now(), side, price, qty, usd}, ...arr].slice(0,10));
+          }
+        }catch{}
+      };
+      return ws;
+    };
+    const w1=make("BTCUSDT",setBtcFlows);
+    const w2=make("ETHUSDT",setEthFlows);
+    return ()=>{ try{w1.close();}catch{} try{w2.close();}catch{} };
+  },[]);
+
+  async function load() {
+    try {
       setLoading(true);
       const res = await Promise.all(
         symbols.map(sym =>
           fetch(`/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`, { cache:"no-store" })
-            .then(r=>r.json()).catch(()=>null)
+            .then(r=>r.json())
+            .catch(()=>null)
         )
       );
-      const map={}; symbols.forEach((sym,i)=> map[sym]=res[i]);
+      const map = {};
+      symbols.forEach((sym, i)=> map[sym] = res[i]);
       setRows(map);
     } finally { setLoading(false); }
   }
@@ -63,19 +87,16 @@ export default function Home(){
   useEffect(()=>{ load(); }, [interval, symbols]);
   useEffect(()=>{
     if (timer.current) clearInterval(timer.current);
-    if (auto) timer.current = setInterval(load, 9000); // 9 sn
+    if (auto) timer.current = setInterval(load, 9000);
     return ()=> clearInterval(timer.current);
   }, [auto, interval, symbols]);
 
-  function resetToCore(){ setSymbols(CORE); }
-  function toggleFav(sym){
-    setFav(prev=>{
-      const s = new Set(prev); s.has(sym) ? s.delete(sym) : s.add(sym);
-      const arr = Array.from(s); lsSet("favSymbols", arr); return arr;
-    });
+  function onSearch(){
+    if(!q) return;
+    const s = q.toUpperCase().endsWith("USDT") ? q.toUpperCase() : (q.toUpperCase()+"USDT");
+    setSymbols([s]);
   }
-
-  const favList = CORE.concat((rows?Object.keys(rows):[])).filter((x,i,all)=>all.indexOf(x)===i).filter(x=>fav.includes(x));
+  function onReset(){ setSymbols(DEFAULTS); setQ(""); }
 
   return (
     <main style={{padding:"16px 18px"}}>
@@ -85,11 +106,17 @@ export default function Home(){
 
         <select value={interval} onChange={e=>setIntervalStr(e.target.value)}
           style={{padding:"8px 10px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#e6e6e6", marginLeft:10}}>
-          {ALL_TFS.map(x=><option key={x} value={x}>{x}</option>)}
+          {["1m","3m","5m","15m","30m","1h","2h","3h","4h","12h","1d","3d"].map(x=><option key={x} value={x}>{x}</option>)}
         </select>
 
-        <button onClick={resetToCore} className="btn">Sıfırla</button>
-        <button onClick={load} disabled={loading} className="btn">{loading? "Yükleniyor…" : "Yenile"}</button>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="BTC, ETH, SOL…"
+               style={{padding:"8px 10px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#e6e6e6"}}/>
+        <button onClick={onSearch} style={btn}>Ara</button>
+
+        <button onClick={onReset} className="btn" style={btn}>Sıfırla</button>
+        <button onClick={load} disabled={loading} style={btn}>
+          {loading? "Yükleniyor…" : "Yenile"}
+        </button>
 
         <label style={{marginLeft:8, display:"flex", alignItems:"center", gap:8}}>
           <input type="checkbox" checked={auto} onChange={e=>setAuto(e.target.checked)}/>
@@ -97,54 +124,26 @@ export default function Home(){
         </label>
       </div>
 
-      {/* Üst 3lü miniTicker */}
-      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:8, marginBottom:12}}>
-        {CORE.map(sym=>{
-          const t = tickers[sym] || {};
-          const col = t.pct==null ? "#9aa4b2" : (t.pct>=0 ? "#22d39a" : "#ff6b6b");
-          return (
-            <div key={sym} style={{background:"#121a33", border:"1px solid #202945", borderRadius:10, padding:10}}>
-              <div style={{display:"flex", justifyContent:"space-between", alignItems:"center"}}>
-                <b style={{color:"#8bd4ff"}}>{sym}</b>
-                <span style={{color:col, fontWeight:800}}>{t.pct==null? "—" : (t.pct>=0?"+":"")+fmt(t.pct,2)+"%"}</span>
-              </div>
-              <div style={{opacity:.85, marginTop:6}}>Son Fiyat: <b>{fmtPrice(t.last)}</b></div>
-            </div>
-          );
-        })}
+      {/* BTC/ETH Balina özet */}
+      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))", gap:10, marginBottom:12}}>
+        <WhaleCard title="BTC Whale (≥$200k)" data={btcFlows}/>
+        <WhaleCard title="ETH Whale (≥$200k)" data={ethFlows}/>
       </div>
 
-      {/* Favoriler */}
-      {favList.length>0 && (
-        <div style={{marginBottom:10}}>
-          <div style={{opacity:.8, margin:"4px 0 6px 2px"}}>⭐ Favoriler</div>
-          <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))", gap:12}}>
-            {favList.map(sym => <CoinCard key={"fav-"+sym} sym={sym} row={rows[sym]} fav onFav={()=>toggleFav(sym)} />)}
-          </div>
-        </div>
-      )}
-
-      {/* Ana kartlar */}
       <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))", gap:12}}>
-        {symbols.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} favActive={fav.includes(sym)} onFav={()=>toggleFav(sym)} />)}
-      </div>
-
-      {/* Sistem durumu */}
-      <div style={{marginTop:12, fontSize:12, opacity:.75}}>
-        Sistem: WS {wsOk ? "bağlı" : "—"} • Son güncelleme: {new Date().toLocaleTimeString("tr-TR")}
+        {symbols.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
       </div>
     </main>
   );
 }
 
-function CoinCard({ sym, row, favActive=false, fav=false, onFav=()=>{} }){
+function CoinCard({ sym, row }) {
   const L = row?.latest || {};
-  const close = L?.close;
-  const ema = L?.ema20, rsi=L?.rsi14;
-  const long = (close>ema) && (rsi>50);
-  const short = (close<ema) && (rsi<50);
-  const signal = long? "LONG" : short? "SHORT" : "NÖTR";
-  const color  = signal === "LONG" ? "#22d39a" : signal === "SHORT" ? "#ff6b6b" : "#9aa4b2";
+  const close = L.close;
+
+  const { longPct, shortPct } = biasFromLatest(L);
+  const signal = longPct >= 55 ? "LONG" : shortPct >= 55 ? "SHORT" : "NÖTR";
+  const color  = signal === "LONG" ? "#20c997" : signal === "SHORT" ? "#ff6b6b" : "#89a";
   const border = signal === "LONG" ? "#1f7a4f" : signal === "SHORT" ? "#7a2e2e" : "#2a2f45";
 
   return (
@@ -158,20 +157,16 @@ function CoinCard({ sym, row, favActive=false, fav=false, onFav=()=>{} }){
         gridTemplateColumns:"1fr auto",
         alignItems:"center",
         gap:10,
-        minHeight:86,
-        position:"relative"
+        minHeight:100
       }}>
-        {/* Fav yıldızı */}
-        <button onClick={(e)=>{ e.preventDefault(); onFav(); }}
-          title="Favoriye ekle/çıkar"
-          style={{
-            position:"absolute", right:10, top:10, background:"transparent", border:"none",
-            fontSize:18, cursor:"pointer", color: favActive? "#ffd43b":"#6b7280"
-          }}>★</button>
-
         <div style={{display:"grid", gap:4}}>
           <div style={{fontWeight:800, fontSize:18, color:"#8bd4ff"}}>{sym}</div>
           <div style={{opacity:.85}}>Son Fiyat: <b>{fmtPrice(close)}</b></div>
+          <div style={{opacity:.9, marginTop:4}}>
+            <span style={{color:"#20c997", fontWeight:700}}>Long {fmt(longPct,0)}%</span>
+            <span style={{opacity:.7}}> / </span>
+            <span style={{color:"#ff6b6b", fontWeight:700}}>Short {fmt(shortPct,0)}%</span>
+          </div>
         </div>
         <div style={{textAlign:"right"}}>
           <div style={{fontWeight:800, color}}>{signal}</div>
@@ -181,3 +176,23 @@ function CoinCard({ sym, row, favActive=false, fav=false, onFav=()=>{} }){
     </Link>
   );
 }
+
+function WhaleCard({ title, data }){
+  return (
+    <div style={{background:"#121a33", border:"1px solid #202945", borderRadius:10, padding:10}}>
+      <div style={{fontWeight:800, color:"#9bd0ff", marginBottom:6}}>{title}</div>
+      <div style={{maxHeight:180, overflowY:"auto"}}>
+        {(!data || data.length===0) && <div style={{opacity:.7}}>Henüz akış yok…</div>}
+        {data.map((it,idx)=>(
+          <div key={idx} style={{display:"grid",gridTemplateColumns:"76px 1fr 1fr",gap:8,padding:"6px 0",borderTop:"1px solid #1f2742"}}>
+            <div style={{opacity:.7}}>{new Date(it.t).toLocaleTimeString("tr-TR")}</div>
+            <div style={{fontWeight:800, color: it.side==="BUY"?"#22d39a":"#ff6b6b"}}>{it.side}</div>
+            <div style={{textAlign:"right"}}>{fmtPrice(it.price)} • ${fmt(it.usd,0)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const btn = {padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700, cursor:"pointer"};
