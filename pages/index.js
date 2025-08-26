@@ -13,6 +13,8 @@ const fmtPrice = (v)=> {
   const d = a>=100?2:a>=1?4:6;
   return Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
 };
+const lsGet = (k, d)=>{ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch{return d;} };
+const lsSet = (k, v)=>{ try{ localStorage.setItem(k, JSON.stringify(v)); }catch{} };
 
 export default function Home(){
   const [symbols, setSymbols] = useState(CORE);
@@ -20,22 +22,24 @@ export default function Home(){
   const [rows, setRows] = useState({});
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
+  const [fav, setFav] = useState(()=> lsGet("favSymbols", []));
+  const [wsOk, setWsOk] = useState(false);
   const timer = useRef(null);
 
-  // 24h değişim ve miniTicker için WS (BTC,ETH,BNB)
+  // 24h değişim & son fiyat — miniTicker WS
   const [tickers, setTickers] = useState({});
   useEffect(()=>{
     const list = CORE.map(s => s.toLowerCase()+"@miniTicker").join("/");
     const url = `wss://fstream.binance.com/stream?streams=${list}`;
     const ws = new WebSocket(url);
+    ws.onopen = ()=> setWsOk(true);
+    ws.onclose= ()=> setWsOk(false);
+    ws.onerror= ()=> setWsOk(false);
     ws.onmessage = (ev)=>{
       try{
         const d = JSON.parse(ev.data)?.data;
         if(d?.e==="24hrMiniTicker"){
-          setTickers(prev=>({
-            ...prev,
-            [d.s]: { last:+d.c, pct:+d.P } // P: 24h %
-          }));
+          setTickers(prev=>({ ...prev, [d.s]: { last:+d.c, pct:+d.P } }));
         }
       }catch{}
     };
@@ -59,13 +63,19 @@ export default function Home(){
   useEffect(()=>{ load(); }, [interval, symbols]);
   useEffect(()=>{
     if (timer.current) clearInterval(timer.current);
-    if (auto) timer.current = setInterval(load, 9000); // ana sayfa 9s
+    if (auto) timer.current = setInterval(load, 9000); // 9 sn
     return ()=> clearInterval(timer.current);
   }, [auto, interval, symbols]);
 
-  function resetToCore(){
-    setSymbols(CORE);
+  function resetToCore(){ setSymbols(CORE); }
+  function toggleFav(sym){
+    setFav(prev=>{
+      const s = new Set(prev); s.has(sym) ? s.delete(sym) : s.add(sym);
+      const arr = Array.from(s); lsSet("favSymbols", arr); return arr;
+    });
   }
+
+  const favList = CORE.concat((rows?Object.keys(rows):[])).filter((x,i,all)=>all.indexOf(x)===i).filter(x=>fav.includes(x));
 
   return (
     <main style={{padding:"16px 18px"}}>
@@ -78,14 +88,8 @@ export default function Home(){
           {ALL_TFS.map(x=><option key={x} value={x}>{x}</option>)}
         </select>
 
-        <button onClick={resetToCore}
-          style={{padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700}}>
-          Sıfırla
-        </button>
-        <button onClick={load} disabled={loading}
-          style={{padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700}}>
-          {loading? "Yükleniyor…" : "Yenile"}
-        </button>
+        <button onClick={resetToCore} className="btn">Sıfırla</button>
+        <button onClick={load} disabled={loading} className="btn">{loading? "Yükleniyor…" : "Yenile"}</button>
 
         <label style={{marginLeft:8, display:"flex", alignItems:"center", gap:8}}>
           <input type="checkbox" checked={auto} onChange={e=>setAuto(e.target.checked)}/>
@@ -110,19 +114,33 @@ export default function Home(){
         })}
       </div>
 
-      {/* Kartlar */}
+      {/* Favoriler */}
+      {favList.length>0 && (
+        <div style={{marginBottom:10}}>
+          <div style={{opacity:.8, margin:"4px 0 6px 2px"}}>⭐ Favoriler</div>
+          <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))", gap:12}}>
+            {favList.map(sym => <CoinCard key={"fav-"+sym} sym={sym} row={rows[sym]} fav onFav={()=>toggleFav(sym)} />)}
+          </div>
+        </div>
+      )}
+
+      {/* Ana kartlar */}
       <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))", gap:12}}>
-        {symbols.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
+        {symbols.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} favActive={fav.includes(sym)} onFav={()=>toggleFav(sym)} />)}
+      </div>
+
+      {/* Sistem durumu */}
+      <div style={{marginTop:12, fontSize:12, opacity:.75}}>
+        Sistem: WS {wsOk ? "bağlı" : "—"} • Son güncelleme: {new Date().toLocaleTimeString("tr-TR")}
       </div>
     </main>
   );
 }
 
-function CoinCard({ sym, row }){
+function CoinCard({ sym, row, favActive=false, fav=false, onFav=()=>{} }){
   const L = row?.latest || {};
-  const close = L.close;
-  // basit önyüz sinyali (EMA20/RSI)
-  const ema = L.ema20, rsi=L.rsi14;
+  const close = L?.close;
+  const ema = L?.ema20, rsi=L?.rsi14;
   const long = (close>ema) && (rsi>50);
   const short = (close<ema) && (rsi<50);
   const signal = long? "LONG" : short? "SHORT" : "NÖTR";
@@ -140,8 +158,17 @@ function CoinCard({ sym, row }){
         gridTemplateColumns:"1fr auto",
         alignItems:"center",
         gap:10,
-        minHeight:86
+        minHeight:86,
+        position:"relative"
       }}>
+        {/* Fav yıldızı */}
+        <button onClick={(e)=>{ e.preventDefault(); onFav(); }}
+          title="Favoriye ekle/çıkar"
+          style={{
+            position:"absolute", right:10, top:10, background:"transparent", border:"none",
+            fontSize:18, cursor:"pointer", color: favActive? "#ffd43b":"#6b7280"
+          }}>★</button>
+
         <div style={{display:"grid", gap:4}}>
           <div style={{fontWeight:800, fontSize:18, color:"#8bd4ff"}}>{sym}</div>
           <div style={{opacity:.85}}>Son Fiyat: <b>{fmtPrice(close)}</b></div>
