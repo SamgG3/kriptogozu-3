@@ -17,7 +17,7 @@ const fmtPrice = (v)=>{
 };
 const pctTxt = (v)=> v==null||isNaN(v) ? "—" : (v>=0?"+":"")+Number(v).toFixed(2)+"%";
 
-/* ===== Momentum / skor ===== */
+/* ===== Bias / Risk ===== */
 function bandPos(L){
   const c=L?.close, bu=L?.bbUpper, bl=L?.bbLower;
   if (c==null||bu==null||bl==null||bu===bl) return null;
@@ -53,7 +53,7 @@ function riskLabel(L){
   return {txt:"—", color:"#9aa4b2"};
 }
 
-/* ===== ATR / ADX / Divergence yardımcıları ===== */
+/* ===== ATR / ADX / Divergence ===== */
 function ema(prev, value, k){ return prev==null ? value : prev + k*(value-prev); }
 function computeATR14FromSeries(rows){
   if (!rows?.length) return null;
@@ -120,16 +120,14 @@ function detectRSIDivergence(series){
   const rHi1 = hiIdx(r.slice(0, Math.floor(N/2))); const rHi2 = hiIdx(r.slice(Math.floor(N/2)))+Math.floor(N/2);
   const pLo1 = loIdx(p.slice(0, Math.floor(N/2))); const pLo2 = loIdx(p.slice(Math.floor(N/2)))+Math.floor(N/2);
   const rLo1 = loIdx(r.slice(0, Math.floor(N/2))); const rLo2 = loIdx(r.slice(Math.floor(N/2)))+Math.floor(N/2);
-  // Bearish: Price HH, RSI LH
   const bearish = p[pHi2]>p[pHi1] && r[rHi2]<r[rHi1];
-  // Bullish: Price LL, RSI HL
   const bullish = p[pLo2]<p[pLo1] && r[rLo2]>r[rLo1];
   if (bullish && !bearish) return "bullish";
   if (bearish && !bullish) return "bearish";
   return null;
 }
-// 24s Hacim (quote) – q/quoteVolume varsa onu, yoksa v*close
-function quoteVol24h(series){ // 15m seriden ~96 bar
+// 24s Hacim (quote) – q varsa onu, yoksa v*close
+function quoteVol24h(series){
   if (!Array.isArray(series)||!series.length) return null;
   const last96 = series.slice(-96);
   let sum=0;
@@ -143,7 +141,7 @@ function quoteVol24h(series){ // 15m seriden ~96 bar
   return sum>0 ? sum : null;
 }
 
-/* ===== S/R & Trend analizi (15m seriden) ===== */
+/* ===== S/R & Trend (15m) ===== */
 function analyzeSRandTrend(series, ema20Latest){
   if (!Array.isArray(series) || series.length<20) return { sr:null, trend:"—" };
   const N=20;
@@ -151,7 +149,6 @@ function analyzeSRandTrend(series, ema20Latest){
   const highs = slice.map(b=> Number(b.high ?? b.h ?? b.close ?? b.c));
   const lows  = slice.map(b=> Number(b.low  ?? b.l ?? b.close ?? b.c));
   const closes= slice.map(b=> Number(b.close?? b.c));
-
   const lastClose = closes[closes.length-1];
 
   const swingsH=[], swingsL=[];
@@ -185,7 +182,7 @@ function calcPlan(dir, L, atrK=DEFAULT_ATR_K, atrSeriesATR=null){
   if (L?.atr14) dist = atrK*L.atr14;
   if (dist==null && L?.bbUpper!=null && L?.bbLower!=null){
     const w = L.bbUpper - L.bbLower;
-    if (w>0) dist = 0.25*w; // bandın 1/4’ü
+    if (w>0) dist = 0.25*w;
   }
   if (dist==null && atrSeriesATR){ dist = atrK*atrSeriesATR; }
   if (!dist || dist<=0) return null;
@@ -257,6 +254,45 @@ function histSummary(days=7){
   const rate = total? Math.round((tpHits/total)*100) : 0;
   return { total, tpHits, slHits, rate };
 }
+
+/* ===== Öğrenen AI (yerel istatistik) ===== */
+const LEARN_KEY = "kgz_sig_learn_v1";
+// Veri yapısı: { feats: {key:{a,b}}, sym:{SYM:{a,b}}, meta:{version:1} }
+function loadLearn(){ try{ return JSON.parse(localStorage.getItem(LEARN_KEY)||'{"feats":{},"sym":{},"meta":{"v":1}}'); }catch{ return {feats:{},sym:{},meta:{v:1}}; } }
+function saveLearn(x){ try{ localStorage.setItem(LEARN_KEY, JSON.stringify(x)); }catch{} }
+function betaRate(a,b){ return (a+1)/(a+b+2); } // Laplace (1,1) prior
+function featAdd(feats, key, success){
+  const cur = feats[key] || {a:0,b:0};
+  if (success) cur.a++; else cur.b++;
+  feats[key]=cur;
+}
+function aiLearnUpdate(keys, sym, success){
+  const L = loadLearn();
+  keys.forEach(k=> featAdd(L.feats, k, success));
+  featAdd(L.sym, sym, success);
+  saveLearn(L);
+}
+function aiScoreBoost(keys, sym){
+  const L = loadLearn();
+  let boost = 0, used=0, details=[];
+  // sembol katkısı
+  const s = L.sym?.[sym];
+  if (s){
+    const r = betaRate(s.a,s.b); const delta = r-0.5;
+    const b = clamp(delta*20, -6, 6); boost += b; used++; details.push(["SYM",b,r,s.a+s.b]);
+  }
+  // feature katkıları
+  for (const k of keys){
+    const f = L.feats?.[k];
+    if (!f) continue;
+    const r = betaRate(f.a,f.b); const delta = r-0.5;
+    const w = k.startsWith("div_")||k.startsWith("adx_") ? 18 : k.startsWith("regime_")? 12 : k.startsWith("whale_")||k.startsWith("fund_")||k.startsWith("oi_") ? 14 : 10;
+    const b = clamp(delta*w, -8, 10);
+    boost += b; used++; details.push([k,b,r,f.a+f.b]);
+  }
+  return { boost: clamp(boost, -12, 16), used, details };
+}
+function aiReset(){ saveLearn({feats:{},sym:{},meta:{v:1}}); }
 
 /* ===== API ===== */
 async function getLatest(symbol, interval){
@@ -339,7 +375,6 @@ export default function PanelSinyal(){
   const [use3m,setUse3m] = useState(true);
   const [use30m,setUse30m] = useState(true);
   const [use4h,setUse4h] = useState(false);
-
   const activeIntervals = useMemo(()=>{
     const base = mode==="intraday" ? ["5m","15m","1h"] : ["1m","5m"];
     if (use3m && !base.includes("3m")) base.splice(1,0,"3m");
@@ -349,7 +384,7 @@ export default function PanelSinyal(){
   },[mode,use3m,use30m,use4h]);
 
   const [potIv,setPotIv] = useState("12h");
-  const [minPot,setMinPot] = useState(0.10);      // ≥ %10
+  const [minPot,setMinPot] = useState(0.10);
   const [sameDir,setSameDir] = useState(false);
   const [useRegime,setUseRegime] = useState(false);
   const [useSqueeze,setUseSqueeze] = useState(false);
@@ -376,16 +411,17 @@ export default function PanelSinyal(){
   const [refreshMs,setRefreshMs] = useState(10000);
   const [lastRunAt,setLastRunAt] = useState(null);
   const [stats,setStats] = useState({scanned:0, kept:0});
-
   const [loading,setLoading] = useState(false);
   const [rows,setRows] = useState([]);
 
-  /* EK KONTROLLER — yeni eklenenler */
-  const [minQuote24h,setMinQuote24h] = useState(100_000_000); // USDT
-  const [adxMin,setAdxMin] = useState(0); // 0=kapalı, 20/25/30 aktif
+  /* === Yeni: Öğrenen AI ayarları === */
+  const [aiEnabled,setAiEnabled] = useState(true);
+  const [aiPanel,setAiPanel] = useState(false); // ağırlıklar modal
+  const [minQuote24h,setMinQuote24h] = useState(100_000_000);
+  const [adxMin,setAdxMin] = useState(0);
   const [excludeHyperVol,setExcludeHyperVol] = useState(false);
-  const [hyperVolPct,setHyperVolPct] = useState(0.05); // ATR/Close > %5 → aşırı oynak
-  const [maxRows,setMaxRows] = useState(5); // eşzamanlı maksimum sinyal
+  const [hyperVolPct,setHyperVolPct] = useState(0.05);
+  const [maxRows,setMaxRows] = useState(5);
 
   /* Arama + Süzgeç */
   const [q,setQ] = useState("");
@@ -408,13 +444,12 @@ export default function PanelSinyal(){
     const out = [];
 
     for (const sym of list){
-      // 1) veriler
       const reqs = [
         getLatest(sym, potIv),
         ...activeIntervals.map(iv=>getLatest(sym,iv)),
-        getLatest(sym,"15m"), // ATR referansı
+        getLatest(sym,"15m"),
         (useWhale||useOI||useFunding) ? getMetrics(sym) : Promise.resolve({oiChangePct:0,fundingRate:0,whaleNetflowUsd:0}),
-        getSeries(sym,"15m",220) // S/R, ADX, Divergence, Hacim
+        getSeries(sym,"15m",220)
       ];
       const res = await Promise.all(reqs);
       const Lpot = res[0];
@@ -423,23 +458,25 @@ export default function PanelSinyal(){
       const metrics = res[2+activeIntervals.length] || {oiChangePct:0,fundingRate:0,whaleNetflowUsd:0};
       const s15 = res[3+activeIntervals.length] || [];
 
-      // 1a) Hacim filtresi (24s)
+      // Hacim filtresi
       const qv = quoteVol24h(s15);
       if (minQuote24hX && qv!=null && qv < minQuote24hX) continue;
 
-      // 2) yön/ skor
+      // Yön + base skor
       let w=0, s=0;
       const weight = {"3m":0.6,"5m":0.5,"15m":0.7,"30m":0.6,"1h":0.8,"4h":0.5};
+      const perTF = {};
       for(const [iv,L] of Object.entries(frames)){
         if(!L) continue;
         const bs=biasScore(L); s+=bs.raw*(weight[iv]||0.5); w+=(weight[iv]||0.5);
+        perTF[iv]=bs;
       }
       const raw = w? s/w : 0;
       const dir = raw>0.06?"LONG": raw<-0.06?"SHORT":"NEUTRAL";
       if (dir==="NEUTRAL") continue;
       let baseScore = Math.round((clamp(raw,-1,1)+1)*50);
 
-      // 3) MTF / Rejim / Sıkışma
+      // MTF / Rejim / Sıkışma
       if (sameDirX){
         const signs = activeIntervals.map(iv=>{
           const bs = frames[iv] ? biasScore(frames[iv]) : null;
@@ -464,7 +501,7 @@ export default function PanelSinyal(){
         if (bw==null || !(bw <= sqThreshX)) continue;
       }
 
-      // 4) potansiyel (BB/ATR)
+      // Potansiyel (BB/ATR)
       const c0 = Lpot?.close ?? frames["15m"]?.close ?? frames["1h"]?.close;
       let potPct = null; let potSource="BB";
       const upBB   = (Lpot?.bbUpper!=null && c0) ? (Lpot.bbUpper - c0)/c0 : null;
@@ -483,29 +520,28 @@ export default function PanelSinyal(){
       }
       if (potPct==null || potPct < minPotX*100) continue;
 
-      // 4a) Volatilite filtresi
+      // Volatilite filtresi
       if (excludeHyperVolX){
         const atrNow = atr ?? computeATR14FromSeries(s15) ?? null;
         const cc = c0 ?? frames["15m"]?.close ?? null;
         const volP = (atrNow && cc)? (atrNow/cc) : null;
-        if (volP!=null && volP > hyperVolPctX) continue; // aşırı oynak
+        if (volP!=null && volP > hyperVolPctX) continue;
       }
 
-      // 5) ADX & RSI Divergence & Konfluens
-      const adx = computeADX14(s15); // null olabilir
+      // ADX & RSI Divergence
+      const adx = computeADX14(s15);
       if (adxMinX && adx!=null && adx < adxMinX) continue;
+      const div = detectRSIDivergence(s15); // "bullish"/"bearish"/null
 
-      const div = detectRSIDivergence(s15); // "bullish" / "bearish" / null
-      let confl=0; const cnotes=[];
-      if (adx!=null){
-        if (adx>=30) {confl+=2; cnotes.push("ADX güçlü");}
-        else if (adx>=25){confl+=1; cnotes.push("ADX orta");}
-      }
-      if (div==="bullish" && dir==="LONG"){confl+=2; cnotes.push("RSI bullish div");}
-      if (div==="bearish" && dir==="SHORT"){confl+=2; cnotes.push("RSI bearish div");}
-
-      // 6) Whale/OI/Funding teyitlerini de konfluense kat
+      // Konfluens
       const notes=[];
+      let confl=0;
+      if (adx!=null){
+        if (adx>=30) {confl+=2; notes.push("ADX güçlü");}
+        else if (adx>=25){confl+=1; notes.push("ADX orta");}
+      }
+      if (div==="bullish" && dir==="LONG"){confl+=2; notes.push("RSI bullish div");}
+      if (div==="bearish"&& dir==="SHORT"){confl+=2; notes.push("RSI bearish div");}
       if (metrics.whaleNetflowUsd){
         if (dir==="LONG" && metrics.whaleNetflowUsd>0){ confl+=2; notes.push("Whale↑"); }
         if (dir==="SHORT"&& metrics.whaleNetflowUsd<0){ confl+=2; notes.push("Whale↓"); }
@@ -517,66 +553,87 @@ export default function PanelSinyal(){
         if (dir==="SHORT"&& f>0){ confl+=1; notes.push(`Funding ${fmt(f*100,3)}%`); }
       }
 
-      const score = Math.min(100, Math.max(0, Math.round(baseScore + (potPct>=30?5:0) + confl*2)));
+      // === AI: dinamik öğrenme özellik anahtarları
+      const aiFeat = [];
+      aiFeat.push(`dir_${dir}`);
+      for (const [iv,bs] of Object.entries(perTF)){ if (bs) aiFeat.push(`tf_${iv}_${bs.dir}`); }
+      if (useRegimeX) aiFeat.push(`regime_${dir}`);
+      if (useSqueezeX && sqThreshX) aiFeat.push(`sq_${sqThreshX}`);
+      if (potSource) aiFeat.push(`pot_${potSource}`);
+      if (adx!=null){
+        if (adx>=30) aiFeat.push("adx_30");
+        else if (adx>=25) aiFeat.push("adx_25");
+      }
+      if (div) aiFeat.push(`div_${div}`);
+      if (metrics.whaleNetflowUsd){
+        aiFeat.push(metrics.whaleNetflowUsd>0? "whale_pos":"whale_neg");
+      }
+      if (metrics.oiChangePct) aiFeat.push(metrics.oiChangePct>0?"oi_pos":"oi_neg");
+      if (metrics.fundingRate){
+        const f=metrics.fundingRate;
+        if (dir==="LONG" && f<0) aiFeat.push("fund_fit_long");
+        if (dir==="SHORT"&& f>0) aiFeat.push("fund_fit_short");
+      }
 
-      // 7) Plan (kilitli mi?)
+      // === Skor + AI boost
+      let score = Math.min(100, Math.max(0, Math.round(baseScore + (potPct>=30?5:0) + confl*2)));
+      let aiBoost=0, aiUsed=0, aiDetails=[];
+      if (aiEnabled){
+        const ab = aiScoreBoost(aiFeat, sym);
+        aiBoost = ab.boost; aiUsed = ab.used; aiDetails = ab.details;
+        score = Math.min(100, Math.max(0, score + aiBoost));
+      }
+
+      // Plan (kilitli)
       const Lref = frames["15m"] || frames["30m"] || frames["1h"] || Lpot;
       let plan = getLockedPlan(sym, dir);
+      let atrCalc = atr ?? computeATR14FromSeries(s15) ?? null;
       if (!plan){
-        const tmp = calcPlan(dir, Lref, DEFAULT_ATR_K, atr);
+        const tmp = calcPlan(dir, Lref, DEFAULT_ATR_K, atrCalc);
         if (tmp) plan = lockPlan(sym, dir, tmp);
       }
 
-      // 8) S/R + Trend
+      // S/R + Trend
       const ana = analyzeSRandTrend(s15, frames["15m"]?.ema20 ?? null);
       const sr=ana.sr; const trend=ana.trend;
 
-      // 9) risk etiketi
+      // Risk etiketi
       const risk = riskLabel(Lref);
 
-      // 10) neden / AI yorum
-      const why=[];
-      for (const iv of ["3m","5m","15m","30m","1h","4h"]){
-        const L=frames[iv]; if(!L) continue;
-        const bs=biasScore(L);
-        if (bs.dir!=="NEUTRAL") why.push(`${iv} ${bs.dir} (sk=${bs.score})`);
-      }
-      const reasons = [...why.slice(0,5), ...notes, ...cnotes].join(" • ");
-
+      // AI yorum
       const aiBits=[];
       if (trend!=="—") aiBits.push(trend);
       if (sr?.distSup!=null) aiBits.push(`Destek ${fmt(sr.distSup,2)}%`);
       if (sr?.distRes!=null) aiBits.push(`Direnç ${fmt(sr.distRes,2)}%`);
       const aiComment = aiBits.join(" • ");
 
-      // 11) fiyat
+      // Fiyat
       const live = wsTicks[sym]?.last ?? null;
       const price = live ?? Lref?.close ?? c0 ?? null;
 
+      // Pozisyon boyutu adaptasyonu (AI + volatilite)
+      let posScale = 1.0;
+      if (aiEnabled){
+        const Lrn = loadLearn();
+        const s = Lrn.sym?.[sym];
+        const symEdge = s ? (betaRate(s.a,s.b)-0.5) : 0;
+        posScale *= clamp(1 + symEdge*0.6, 0.7, 1.2);
+      }
+      if (atrCalc && price && (atrCalc/price) > 0.06) posScale *= 0.8; // aşırı oynaksa küçült
+      const riskUsd = capital*(riskPct/100)*posScale;
+
       out.push({
-        sym:sym,
-        dir,
-        score,
-        potPct:Math.round(potPct),
-        potSource,
-        price,
-        reasons,
-        entry: plan?.entry, sl: plan?.sl, tp1: plan?.tp1, tp2: plan?.tp2, tp3: plan?.tp3,
-        r: plan?.r,
-        risk,
-        sr,
-        trend,
-        adx,
-        div,
-        qv,
-        aiComment,
-        fav: favSet.has(sym)
+        sym, dir, score, aiBoost, aiUsed, aiDetails,
+        potPct:Math.round(potPct), potSource, price,
+        reasons: [...notes].join(" • "),
+        entry: plan?.entry, sl: plan?.sl, tp1: plan?.tp1, tp2: plan?.tp2, tp3: plan?.tp3, r: plan?.r,
+        risk, sr, trend, adx, div, qv, aiComment, fav: favSet.has(sym),
+        aiFeat, riskUsd
       });
     }
 
-    // Favoriler önce, sonra skor/potansiyel
+    // Favoriler önce, sonra skor
     out.sort((a,b)=> (Number(b.fav)-Number(a.fav)) || (b.score-a.score) || (b.potPct-a.potPct));
-
     return out;
   }
 
@@ -615,10 +672,10 @@ export default function PanelSinyal(){
   },[
     authOk,symbols,refreshMs,mode,use3m,use30m,use4h,potIv,minPot,sameDir,useRegime,useSqueeze,sqThresh,
     easyMode,useWhale,useOI,useFunding,capital,riskPct,onlyFavs,filterSym,
-    minQuote24h, adxMin, excludeHyperVol, hyperVolPct, maxRows
+    minQuote24h, adxMin, excludeHyperVol, hyperVolPct, maxRows, aiEnabled
   ]);
 
-  /* WS: aktif satırlar için TP/SL izleme + trailing + başarı */
+  /* WS: TP/SL izleme + trailing + başarı + ÖĞRENME güncellemesi */
   const watchers = useRef({});
   useEffect(()=>{
     Object.values(watchers.current).forEach(w=>{try{w.sock&&w.sock.close();}catch{}});
@@ -634,21 +691,25 @@ export default function PanelSinyal(){
           const d=JSON.parse(ev.data); const c=d?.c?+d.c:null; if(!c) return;
 
           if (r.dir==="LONG"){
-            if (!state.tp1Hit && c>=r.tp1){ state.tp1Hit=true; // trailing → SL = entry
-              updateLockedPlan(r.sym, r.dir, { sl: r.entry }); markFloating(r.sym,"TP1",r); }
-            if (!state.tp2Hit && c>=r.tp2){ state.tp2Hit=true; // trailing → SL = TP1
-              updateLockedPlan(r.sym, r.dir, { sl: r.tp1 }); markFloating(r.sym,"TP2",r); }
-            if (c<= (getLockedPlan(r.sym, r.dir)?.sl ?? r.sl)){ state.resolved=true; markResolved(r.sym,"SL",r); clearPlan(r.sym); }
-            else if (c>=r.tp3){ state.resolved=true; markResolved(r.sym,"TP3",r); clearPlan(r.sym); }
+            if (!state.tp1Hit && c>=r.tp1){ state.tp1Hit=true; updateLockedPlan(r.sym, r.dir, { sl: r.entry }); markFloating(r.sym,"TP1",r); }
+            if (!state.tp2Hit && c>=r.tp2){ state.tp2Hit=true; updateLockedPlan(r.sym, r.dir, { sl: r.tp1 }); markFloating(r.sym,"TP2",r); }
+            if (c<= (getLockedPlan(r.sym, r.dir)?.sl ?? r.sl)){ state.resolved=true; finalize("SL"); }
+            else if (c>=r.tp3){ state.resolved=true; finalize("TP3"); }
           }else{
-            if (!state.tp1Hit && c<=r.tp1){ state.tp1Hit=true;
-              updateLockedPlan(r.sym, r.dir, { sl: r.entry }); markFloating(r.sym,"TP1",r); }
-            if (!state.tp2Hit && c<=r.tp2){ state.tp2Hit=true;
-              updateLockedPlan(r.sym, r.dir, { sl: r.tp1 }); markFloating(r.sym,"TP2",r); }
-            if (c>= (getLockedPlan(r.sym, r.dir)?.sl ?? r.sl)){ state.resolved=true; markResolved(r.sym,"SL",r); clearPlan(r.sym); }
-            else if (c<=r.tp3){ state.resolved=true; markResolved(r.sym,"TP3",r); clearPlan(r.sym); }
+            if (!state.tp1Hit && c<=r.tp1){ state.tp1Hit=true; updateLockedPlan(r.sym, r.dir, { sl: r.entry }); markFloating(r.sym,"TP1",r); }
+            if (!state.tp2Hit && c<=r.tp2){ state.tp2Hit=true; updateLockedPlan(r.sym, r.dir, { sl: r.tp1 }); markFloating(r.sym,"TP2",r); }
+            if (c>= (getLockedPlan(r.sym, r.dir)?.sl ?? r.sl)){ state.resolved=true; finalize("SL"); }
+            else if (c<=r.tp3){ state.resolved=true; finalize("TP3"); }
           }
         }catch{}
+
+        function finalize(tag){
+          markResolved(r.sym, tag, r);
+          // === Öğrenme güncelle
+          const success = tag!=="SL";
+          aiLearnUpdate(r.aiFeat||[], r.sym, success);
+          clearPlan(r.sym);
+        }
       };
       watchers.current[r.sym]=state;
     });
@@ -678,29 +739,27 @@ export default function PanelSinyal(){
   /* HELP */
   const HELP_TEXT = (
     <div style={{lineHeight:1.55}}>
-      <b>Skor:</b> EMA/RSI/Stoch+BB birleşik. Konfluens puanı (ADX, divergence, whale/OI/funding) eklenir. 80–100 güçlü.<br/>
+      <b>Skor:</b> EMA/RSI/Stoch+BB birleşik. Konfluens (ADX, divergence, whale/OI/funding) eklenir. 80–100 güçlü.<br/>
+      <b>AI Öğrenim:</b> Her sinyalin <i>özelliklerini</i> (örn. ADX≥25, bullish divergence, funding uyumu, 3m/15m yönü) ve sembol bazında sonucu (TP/SL) saklar. Laplace prior ile oranları günceller, skora dinamik <b>AI Boost</b> ekler. Pozisyon boyutunu da küçük oranda ayarlar.<br/>
       <b>Potansiyel:</b> BB hedefi veya ATR×2. Min %10–30 arası seçilebilir.<br/>
       <b>Hacim filtresi:</b> 24s USDT hacmi düşük olanları eler (manipülasyon riski ↓).<br/>
-      <b>Trend Gücü (ADX):</b> 25+ trend güçlü kabul edilir; yalancı kırılım riski ↓.<br/>
-      <b>RSI Divergence:</b> Fiyat/RSI uyumsuzluğu yön teyidi verir (bullish/bearish).<br/>
+      <b>Trend Gücü (ADX):</b> 25+ trend güçlü kabul edilir.<br/>
+      <b>RSI Divergence:</b> Fiyat/RSI uyumsuzluğu yön teyidi verir.<br/>
       <b>Volatilite:</b> ATR/Close çok yüksekse “aşırı oynak” filtrelenebilir.<br/>
-      <b>Destek/Direnç:</b> 15m swing seviyeleri; yanda fiyata uzaklık yüzdesi.<br/>
-      <b>Kırılım:</b> 15m’de son tepe/dip eşiği EMA20 yönünde aşılırsa “↑/↓ kırılım”.<br/>
-      <b>Plan (KİLİTLİ):</b> Entry/SL/TP1-3 ilk üretildiği anda sabitlenir. Trailing: TP1→SL=Entry, TP2→SL=TP1.<br/>
-      <b>Önerilen Pozisyon:</b> (Sermaye×Risk%) / (Entry−SL). Çoklu TP için kademeli realize önerilir.<br/>
-      <b>Başarı %:</b> TP/SL dokunuşları WS ile takip edilir, 7g özet üstte gösterilir.<br/>
-      <b>Max Sinyal:</b> Listede eşzamanlı en fazla X sinyal görünür (risk yayılımı).<br/>
+      <b>S/R & Kırılım:</b> 15m swing seviyeleri ve tepe/dip kırılımları.<br/>
+      <b>Plan (KİLİTLİ):</b> Entry/SL/TP1-3 sabitlenir. Trailing: TP1→SL=Entry, TP2→SL=TP1.<br/>
+      <b>Önerilen Poz.:</b> (Sermaye×Risk%) / (Entry−SL) × AI uyarlaması.<br/>
+      <b>Başarı %:</b> TP/SL dokunuşları WS ile izlenir, 7g özet üstte.<br/>
     </div>
   );
 
-  /* Grid yardımcıları */
-  const gridCols = "1.05fr 0.65fr 0.65fr 0.8fr 1.1fr 1.1fr 2.2fr 1.2fr 0.9fr";
+  /* Grid */
+  const gridCols = "1.05fr 0.65fr 0.9fr 0.9fr 1.1fr 1.4fr 2.2fr 1.3fr 0.9fr";
   const cellBorder = (i, total)=> ({ paddingRight:10, borderRight: i<total-1 ? "1px solid #1f2742" : "none" });
-
   const dash = histSummary(7);
 
   return (
-    <main style={{minHeight:"100vh", background:"#0f1320", color:"#e6f0ff", padding:"16px 18px", paddingBottom:72}}>
+    <main style={{minHeight:"100vh", background:"#0f1320", color:"#e6f0ff", padding:"16px 18px", paddingBottom:76}}>
       {/* NAV + kontrol */}
       <nav style={{display:"flex",gap:12,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
         <button onClick={()=> (history.length>1 ? history.back() : router.push("/"))}
@@ -721,10 +780,15 @@ export default function PanelSinyal(){
           />
           <button onClick={()=>{ const s=normSym(q); if(s) router.push(`/coin/${s}`); }} style={btnSm} type="button">Ara</button>
           <button onClick={()=>{ const s=normSym(q); setFilterSym(s); }} style={btnSm} type="button">Süz</button>
-          {filterSym && <button onClick={()=>setFilterSym("")} style={btnSm} type="button">Filtreyi Temizle ({filterSym})</button>}
+          {filterSym && <button onClick={()=>setFilterSym("")} style={btnSm} type="button">Temizle ({filterSym})</button>}
 
           <label style={lbl}><input type="checkbox" checked={easyMode} onChange={e=>setEasyMode(e.target.checked)}/> Kolay Mod</label>
+
+          <label style={lbl}><input type="checkbox" checked={aiEnabled} onChange={e=>setAiEnabled(e.target.checked)}/> AI Öğrenim</label>
+          <button onClick={()=>setAiPanel(v=>!v)} style={{...btnSm,padding:"6px 10px"}} type="button">AI ?</button>
+
           <button onClick={()=>setHelpOpen(v=>!v)} style={{...btnSm,padding:"6px 10px"}} type="button">?</button>
+
           <label style={lbl}>
             Hız
             <select value={String(refreshMs)} onChange={e=>setRefreshMs(Number(e.target.value))} style={sel}>
@@ -738,16 +802,11 @@ export default function PanelSinyal(){
 
       {/* Üst mini dashboard */}
       <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:10,opacity:.85}}>
-        <span style={{padding:"6px 10px",border:"1px solid #2a2f45",borderRadius:8,background:"#101a30"}}>
-          7g Sinyal: <b>{dash.total}</b>
-        </span>
-        <span style={{padding:"6px 10px",border:"1px solid #2a2f45",borderRadius:8,background:"#101a30"}}>
-          Başarı: <b>{dash.rate}%</b> (TP:{dash.tpHits} / SL:{dash.slHits})
-        </span>
-        <span style={{padding:"6px 10px",border:"1px solid #2a2f45",borderRadius:8,background:"#101a30"}}>
-          Tarandı: <b>{symbols.length}</b> • Gösterilen: <b>{rows.length}</b> • Son: {lastRunAt? lastRunAt.toLocaleTimeString():"—"}
-        </span>
-        {easyApplied && <span style={{padding:"6px 10px",border:"1px solid #314466",borderRadius:8,background:"#142235",color:"#9bd0ff",fontWeight:800}}>Kolay Mod devrede</span>}
+        <span style={chip}>7g Sinyal: <b>{dash.total}</b></span>
+        <span style={chip}>Başarı: <b>{dash.rate}%</b> (TP:{dash.tpHits} / SL:{dash.slHits})</span>
+        <span style={chip}>Tarandı: <b>{symbols.length}</b> • Gösterilen: <b>{rows.length}</b> • Son: {lastRunAt? lastRunAt.toLocaleTimeString():"—"}</span>
+        {easyApplied && <span style={{...chip, border:"1px solid #314466", background:"#142235", color:"#9bd0ff", fontWeight:800}}>Kolay Mod devrede</span>}
+        <button onClick={()=>{ aiReset(); alert("AI öğrenim istatistikleri sıfırlandı."); }} style={{...btnSm,marginLeft:8}}>AI Sıfırla</button>
       </div>
 
       {/* Filtre çubuğu */}
@@ -832,11 +891,14 @@ export default function PanelSinyal(){
           </label>
 
           <label style={lbl}><input type="checkbox" checked={onlyFavs} onChange={e=>setOnlyFavs(e.target.checked)}/> Sadece Favoriler</label>
+          <label style={lbl}>Sermaye<input type="number" value={capital} onChange={e=>setCapital(Number(e.target.value||0))} style={{...sel,width:90}}/></label>
+          <label style={lbl}>Risk %<input type="number" step="0.1" value={riskPct} onChange={e=>setRiskPct(Number(e.target.value||0))} style={{...sel,width:80}}/></label>
+
           <button onClick={doScan} disabled={loading} style={btnPrimary}>{loading?"Taranıyor…":"Yenile"}</button>
         </div>
       </div>
 
-      {/* BAŞLIK */}
+      {/* Başlık */}
       <div style={{
         display:"grid",
         gridTemplateColumns:gridCols,
@@ -846,16 +908,16 @@ export default function PanelSinyal(){
       }}>
         <div style={cellBorder(0,9)}>Coin</div>
         <div style={cellBorder(1,9)}>Yön</div>
-        <div style={cellBorder(2,9)}>Skor ⓘ</div>
+        <div style={cellBorder(2,9)}>Skor <span title="AI Boost dahil">ⓘ</span></div>
         <div style={cellBorder(3,9)}>Başarı % (7g)</div>
         <div style={cellBorder(4,9)}>S/R (yakın)</div>
         <div style={cellBorder(5,9)}>Trend / ADX / Div</div>
         <div style={cellBorder(6,9)}>Entry • SL • TP1/2/3</div>
         <div style={cellBorder(7,9)}>Önerilen Poz.</div>
-        <div style={cellBorder(8,9)}>Kaynak ⓘ</div>
+        <div style={cellBorder(8,9)}>Kaynak</div>
       </div>
 
-      {/* LİSTE */}
+      {/* Liste */}
       <div style={{border:"1px solid #1f2742", borderTop:"none", borderRadius:"0 0 12px 12px", overflow:"hidden"}}>
         {rows.length===0 && (
           <div style={{padding:"12px 14px", opacity:.75}}>Şu an kriterlere uyan sinyal yok. Filtreleri gevşetip tekrar dene.</div>
@@ -865,7 +927,7 @@ export default function PanelSinyal(){
           const price = wsTicks[r.sym]?.last ?? r.price ?? r.entry ?? null;
           const chg   = wsTicks[r.sym]?.chg ?? null;
           const plan  = r.entry ? r : null;
-          const pos   = plan ? positionSize(capital, riskPct, r.r) : 0;
+          const pos   = plan ? positionSize(r.riskUsd/(riskPct/100), riskPct, r.r) : 0; // riskUsd zaten AI ölçekli
           const fav   = r.fav;
           const hs    = histStatsFor(r.sym,7);
 
@@ -893,8 +955,15 @@ export default function PanelSinyal(){
               {/* Yön */}
               <div style={{...cellBorder(1,9),fontWeight:900,color:r.dir==="LONG"?"#22d39a":"#ff6b6b"}}>{r.dir}</div>
 
-              {/* Skor */}
-              <div style={cellBorder(2,9)}>{fmt(r.score,0)}</div>
+              {/* Skor (+AI) */}
+              <div style={{...cellBorder(2,9),display:"flex",alignItems:"center",gap:8}}>
+                <span>{fmt(r.score,0)}</span>
+                {aiEnabled && r.aiUsed>0 && (
+                  <span title={"AI Boost: " + fmt(r.aiBoost,1)} style={{padding:"2px 6px",border:"1px solid #2a2f45",borderRadius:8,background:"#132036",color:"#9bd0ff",fontSize:12,fontWeight:800}}>
+                    AI {r.aiBoost>=0?"+":""}{fmt(r.aiBoost,1)}
+                  </span>
+                )}
+              </div>
 
               {/* Başarı % */}
               <div style={cellBorder(3,9)} title={`7g • TP:${hs.tpHits} / SL:${hs.slHits} • Toplam:${hs.total}`}>{hs.rate? `${hs.rate}%` : "—"}</div>
@@ -909,7 +978,7 @@ export default function PanelSinyal(){
                   : <span style={{opacity:.6}}>—</span>}
               </div>
 
-              {/* Trend / ADX / Div */}
+              {/* Trend / ADX / Div + AI yorum */}
               <div style={cellBorder(5,9)}>
                 {r.trend || "—"}
                 {r.adx!=null && <span style={{opacity:.75}}> • ADX {fmt(r.adx,0)}</span>}
@@ -929,11 +998,11 @@ export default function PanelSinyal(){
                 }
               </div>
 
-              {/* Önerilen Poz. + PaperTrade */}
+              {/* Önerilen Poz. (AI uyarlamalı) + Paper */}
               <div style={{...cellBorder(7,9),fontSize:13,display:"flex",alignItems:"center",gap:8}}>
                 {plan
                   ? (pos>0
-                      ? <span>Boyut: <b>{fmt(pos,3)}</b> adet • Risk: ~<b>{fmt(capital*(riskPct/100),2)} USDT</b> • <span style={{color:r.risk?.color}}>{r.risk?.txt||"—"}</span></span>
+                      ? <span>Boyut: <b>{fmt(pos,3)}</b> adet • Risk: ~<b>{fmt(r.riskUsd,2)} USDT</b> • <span style={{color:r.risk?.color}}>{r.risk?.txt||"—"}</span></span>
                       : <span style={{opacity:.6}}>Sermaye/Risk/ATR yetersiz</span>)
                   : <span style={{opacity:.6}}>Plan yok</span>
                 }
@@ -943,7 +1012,7 @@ export default function PanelSinyal(){
                     const hist=loadHist();
                     hist.push({sym:r.sym,ts:Date.now(),dir:r.dir,entry:r.entry,sl:(getLockedPlan(r.sym, r.dir)?.sl ?? r.sl),tp1:r.tp1,tp2:r.tp2,tp3:r.tp3,resolved:null,manual:true});
                     saveHist(hist);
-                    alert("Paper trade başlatıldı (tarayıcıda). TP/SL dokunuşları izleniyor.");
+                    alert("Paper trade başlatıldı. TP/SL dokunuşları izleniyor (tarayıcı).");
                   }}
                 >Paper</button>
               </div>
@@ -955,11 +1024,67 @@ export default function PanelSinyal(){
         })}
       </div>
 
+      {/* Açıklama paneli */}
+      {helpOpen && (
+        <div style={helpBox}>{HELP_TEXT}</div>
+      )}
+
+      {/* AI ağırlıkları paneli */}
+      {aiPanel && <AiWeightsPanel onClose={()=>setAiPanel(false)} />}
+
       <p style={{opacity:.6,marginTop:10,fontSize:12}}>
-        Kaynak: Binance Futures (miniTicker WS + MTF indicators + {potIv.toUpperCase()} potansiyel + 15m S/R, ADX, RSI divergence, 24s hacim).
+        Kaynak: Binance Futures (miniTicker WS + MTF indicators + {potIv.toUpperCase()} potansiyel + 15m S/R, ADX, RSI divergence, 24s hacim + <b>AI öğrenen skor</b>).
         Bilgi amaçlıdır, yatırım tavsiyesi değildir.
       </p>
     </main>
+  );
+}
+
+/* ===== AI Ağırlık görüntüleme (opsiyonel) ===== */
+function AiWeightsPanel({ onClose }){
+  const L = loadLearn();
+  const items = Object.entries(L.feats||{}).map(([k,v])=>({k, a:v.a||0, b:v.b||0, r: betaRate(v.a||0,v.b||0)}))
+    .sort((x,y)=> ( (y.a+y.b)-(x.a+x.b) ));
+  const symItems = Object.entries(L.sym||{}).map(([k,v])=>({k, a:v.a||0, b:v.b||0, r: betaRate(v.a||0,v.b||0)}))
+    .sort((x,y)=> ( (y.a+y.b)-(x.a+x.b) ));
+
+  return (
+    <div style={{
+      position:"fixed", left:0, right:0, bottom:0, top:0, background:"rgba(0,0,0,.55)",
+      display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000
+    }}>
+      <div style={{width:"min(920px,96vw)", maxHeight:"80vh", overflow:"auto", background:"#0f1328", border:"1px solid #1f2742", borderRadius:12, padding:14}}>
+        <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8}}>
+          <b style={{fontSize:16}}>AI Öğrenim Ağırlıkları</b>
+          <button onClick={onClose} style={btnSm}>Kapat</button>
+        </div>
+
+        <div style={{display:"grid", gridTemplateColumns:"1fr 120px 120px 120px", gap:8, fontWeight:800, color:"#9bb8e8", padding:"6px 0", borderBottom:"1px solid #22324f"}}>
+          <div>Özellik</div><div>Başarı Oranı</div><div>TP</div><div>SL</div>
+        </div>
+        {items.map((it,i)=>(
+          <div key={i} style={{display:"grid", gridTemplateColumns:"1fr 120px 120px 120px", gap:8, padding:"6px 0", borderBottom:"1px solid #1b2642"}}>
+            <div style={{opacity:.95}}>{it.k}</div>
+            <div><b>{fmt(it.r*100,1)}%</b></div>
+            <div>{it.a}</div>
+            <div>{it.b}</div>
+          </div>
+        ))}
+
+        <div style={{height:10}} />
+        <div style={{display:"grid", gridTemplateColumns:"1fr 120px 120px 120px", gap:8, fontWeight:800, color:"#9bb8e8", padding:"6px 0", borderBottom:"1px solid #22324f"}}>
+          <div>Sembol</div><div>Başarı Oranı</div><div>TP</div><div>SL</div>
+        </div>
+        {symItems.map((it,i)=>(
+          <div key={i} style={{display:"grid", gridTemplateColumns:"1fr 120px 120px 120px", gap:8, padding:"6px 0", borderBottom:"1px solid #1b2642"}}>
+            <div style={{opacity:.95}}>{it.k}</div>
+            <div><b>{fmt(it.r*100,1)}%</b></div>
+            <div>{it.a}</div>
+            <div>{it.b}</div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -969,3 +1094,5 @@ const lbl  = { display:"inline-flex", alignItems:"center", gap:8, padding:"6px 1
 const sel  = { padding:"6px 8px", background:"#0f1320", border:"1px solid #23283b", borderRadius:8, color:"#e6e6e6" };
 const btnSm= { padding:"6px 10px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:8, color:"#fff", cursor:"pointer" };
 const btnPrimary = { padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:800, cursor:"pointer" };
+const chip = { padding:"6px 10px", border:"1px solid #2a2f45", borderRadius:8, background:"#101a30" };
+const helpBox = { marginTop:10, border:"1px solid #22324f", background:"#0f152a", borderRadius:12, padding:"10px 12px", lineHeight:1.6 };
