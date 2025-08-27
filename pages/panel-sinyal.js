@@ -3,10 +3,10 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 
-/* ===== Sadece yetkili roller ===== */
+/* ===== Roller (Kurucu / Yönetici / Arkadaş) ===== */
 const ALLOWED_ROLES = new Set(["kurucu","yonetici","arkadas"]);
 
-/* ===== Yardımcılar ===== */
+/* ===== Helpers ===== */
 const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
 const fmt = (v,d=2)=> v==null||isNaN(v) ? "—" :
   Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
@@ -32,7 +32,8 @@ function biasScore(L){
   const bp   = bandPos(L); const nBB = bp==null ? 0 : clamp((bp-50)/30, -1, 1);
   const raw  = clamp(0.35*nEMA + 0.30*nRSI + 0.20*nSto + 0.15*nBB, -1, 1);
   const score= Math.round((raw+1)*50);
-  const dir  = raw>0.08 ? "LONG" : raw<-0.08 ? "SHORT" : "NEUTRAL";
+  // biraz gevşettim: 0.06 eşik → daha çok sinyal
+  const dir  = raw>0.06 ? "LONG" : raw<-0.06 ? "SHORT" : "NEUTRAL";
   return { dir, score, raw };
 }
 function riskLabel(L){
@@ -53,7 +54,7 @@ function riskLabel(L){
   return {txt:"—", color:"#9aa4b2"};
 }
 
-/* ===== ATR fallback (EMA-ATR, HL yoksa close’tan da hesaplar) ===== */
+/* ===== ATR fallback (HL yoksa close’tan da üretir) ===== */
 function ema(prev, value, k){ return prev==null ? value : prev + k*(value-prev); }
 function computeATR14FromSeries(rows){
   if (!rows?.length) return null;
@@ -145,7 +146,7 @@ export default function PanelSinyal(){
     else setAuthOk(true);
   },[router]);
 
-  /* Semboller (backend’den dene, yoksa fallback liste) */
+  /* Semboller (backend varsa ondan, yoksa fallback) */
   const [symbols,setSymbols] = useState([]);
   useEffect(()=>{
     async function loadSymbols(){
@@ -187,7 +188,7 @@ export default function PanelSinyal(){
     return ()=> sockets.forEach(w=>{try{w.close();}catch{}});
   },[symbols]);
 
-  /* Kontroller – gevşek varsayılanlar */
+  /* Kontroller — sinyal gelsin diye biraz gevşek varsayılanlar */
   const [mode,setMode] = useState("intraday");
   const [use3m,setUse3m] = useState(true);
   const [use30m,setUse30m] = useState(true);
@@ -202,10 +203,10 @@ export default function PanelSinyal(){
   },[mode,use3m,use30m,use4h]);
 
   const [potIv,setPotIv] = useState("12h");
-  const [minPot,setMinPot] = useState(0.15); // ≥%15
-  const [sameDir,setSameDir] = useState(false); // GEVŞEK
-  const [useRegime,setUseRegime] = useState(true);
-  const [useSqueeze,setUseSqueeze] = useState(false); // GEVŞEK
+  const [minPot,setMinPot] = useState(0.10);      // ≥ %10
+  const [sameDir,setSameDir] = useState(false);   // kapalı → daha fazla sinyal
+  const [useRegime,setUseRegime] = useState(false); // kapalı → daha fazla sinyal
+  const [useSqueeze,setUseSqueeze] = useState(false);
   const [sqThresh,setSqThresh] = useState(0.012);
 
   const [useWhale,setUseWhale] = useState(true);
@@ -217,9 +218,9 @@ export default function PanelSinyal(){
   const [atrK,setAtrK] = useState(DEFAULT_ATR_K);
   const [timeStopMin,setTimeStopMin] = useState(60);
 
-  const [easyMode,setEasyMode] = useState(true);
+  const [easyMode,setEasyMode] = useState(true);     // filtreleri otomatik gevşetme
   const [easyApplied,setEasyApplied] = useState(false);
-  const [helpOpen,setHelpOpen] = useState(false);
+  const [helpOpen,setHelpOpen] = useState(false);    // “?” butonu
 
   const [onlyFavs,setOnlyFavs] = useState(false);
   const [favs,setFavs] = useState([]);
@@ -229,23 +230,31 @@ export default function PanelSinyal(){
 
   const [refreshMs,setRefreshMs] = useState(10000);
   const [lastRunAt,setLastRunAt] = useState(null);
-  const [stats,setStats] = useState({scanned:0, keptStrict:0, keptEasy:0, missingBB:0});
+  const [stats,setStats] = useState({scanned:0, keptStrict:0, keptEasy:0});
 
   const [loading,setLoading] = useState(false);
   const [rows,setRows] = useState([]);
 
-  /* TARAMA */
-  async function scanOnce(params, counters){
-    const { potIvX, minPotX, sameDirX, useRegimeX, useSqueezeX, sqThreshX } = params;
-    const list = symbols.filter(s=>!onlyFavs || favSet.has(s));
-    const tasks = list.map(async (sym)=>{
-      counters.scanned++;
+  /* Arama + Süzgeç */
+  const [q,setQ] = useState("");
+  const [filterSym,setFilterSym] = useState(""); // panel içinde sadece bu coin göster
+  const normSym = (t)=>{
+    if(!t) return "";
+    const u=t.trim().toUpperCase();
+    return u.endsWith("USDT")? u : (u+"USDT");
+  };
 
-      // 1) verileri topla
+  /* TARAMA */
+  async function scanOnce(params){
+    const { minPotX, sameDirX, useRegimeX, useSqueezeX, sqThreshX } = params;
+    const listAll = symbols;
+    const list = listAll.filter(s=>!onlyFavs || favSet.has(s));
+    const tasks = list.map(async (sym)=>{
+      // 1) veriler
       const reqs = [
-        getLatest(sym, potIvX),
+        getLatest(sym, potIv),
         ...activeIntervals.map(iv=>getLatest(sym,iv)),
-        getLatest(sym,"15m"), // atr referansı
+        getLatest(sym,"15m"), // ATR referansı
         (useWhale||useOI||useFunding) ? getMetrics(sym) : Promise.resolve({oiChangePct:0,fundingRate:0,whaleNetflowUsd:0})
       ];
       const res = await Promise.all(reqs);
@@ -254,16 +263,16 @@ export default function PanelSinyal(){
       const atrRef = res[1+activeIntervals.length];
       const metrics = res[2+activeIntervals.length] || {oiChangePct:0,fundingRate:0,whaleNetflowUsd:0};
 
-      // 2) yön/ skor
+      // 2) yön/ skor (biraz daha kapsayıcı)
       let w=0, s=0;
-      const weight = {"3m":0.5,"5m":0.5,"15m":0.7,"30m":0.6,"1h":0.8,"4h":0.5};
+      const weight = {"3m":0.6,"5m":0.5,"15m":0.7,"30m":0.6,"1h":0.8,"4h":0.5};
       for(const [iv,L] of Object.entries(frames)){
         if(!L) continue;
         const bs=biasScore(L); s+=bs.raw*(weight[iv]||0.5); w+=(weight[iv]||0.5);
       }
       const raw = w? s/w : 0;
-      const dir = raw>0.08?"LONG": raw<-0.08?"SHORT":"NEUTRAL";
-      const score = Math.round((clamp(raw,-1,1)+1)*50);
+      const dir = raw>0.06?"LONG": raw<-0.06?"SHORT":"NEUTRAL";
+      const baseScore = Math.round((clamp(raw,-1,1)+1)*50);
       if (dir==="NEUTRAL") return null;
 
       // 3) MTF aynı yön
@@ -301,9 +310,8 @@ export default function PanelSinyal(){
 
       // ATR fallback (seriden)
       let atr = atrRef?.atr14 || null;
-      let atr15mSeries=null;
       if (!atr){
-        atr15mSeries = await getSeries(sym,"15m",200);
+        const atr15mSeries = await getSeries(sym,"15m",200);
         const calc = computeATR14FromSeries(atr15mSeries);
         if (calc) atr = calc;
       }
@@ -317,23 +325,24 @@ export default function PanelSinyal(){
       }
       if (potPct==null || potPct < minPotX*100) return null;
 
-      // 6) teyit (küçük katkı)
+      // 6) teyit (küçük katkılar)
       let confBoost=0; const notes=[];
       if (useWhale && metrics.whaleNetflowUsd){
         if (dir==="LONG" && metrics.whaleNetflowUsd>0){ confBoost+=0.1; notes.push("Whale↑"); }
         if (dir==="SHORT"&& metrics.whaleNetflowUsd<0){ confBoost+=0.1; notes.push("Whale↓"); }
       }
-      if (useOI && metrics.oiChangePct>0){ confBoost+=0.1; notes.push(`OI ${fmt(metrics.oiChangePct,1)}%`); }
+      if (useOI && metrics.oiChangePct>0){ confBoost+=0.08; notes.push(`OI ${fmt(metrics.oiChangePct,1)}%`); }
       if (useFunding && metrics.fundingRate){
         const f=metrics.fundingRate;
         if (dir==="LONG" && f<0){ confBoost+=0.05; notes.push(`Funding ${fmt(f*100,3)}%`); }
         if (dir==="SHORT"&& f>0){ confBoost+=0.05; notes.push(`Funding ${fmt(f*100,3)}%`); }
       }
-      const scoreAdj = Math.round( clamp((score/100)*0.9 + confBoost*0.1, 0, 1)*100 );
+      // skor makyajı biraz (daha okunur değerler)
+      const score = Math.min(100, Math.max(0, Math.round(baseScore + confBoost*10 + (potPct>=30?5:0))));
 
-      // 7) plan (ATR/BB/series)
+      // 7) plan
       const Lref = frames["15m"] || frames["30m"] || frames["1h"] || Lpot;
-      const plan = calcPlan(dir, Lref, atrK, atr);
+      const plan = calcPlan(dir, Lref, DEFAULT_ATR_K, atr);
 
       // 8) risk etiketi
       const risk = riskLabel(Lref);
@@ -351,7 +360,7 @@ export default function PanelSinyal(){
       return {
         sym:sym,
         dir:dir,
-        score:scoreAdj,
+        score,
         potPct:Math.round(potPct),
         potSource,
         price: wsTicks[sym]?.last ?? Lref?.close ?? c ?? null,
@@ -367,27 +376,25 @@ export default function PanelSinyal(){
   }
 
   async function doScan(){
+    if(!symbols.length) return;
     setLoading(true); setEasyApplied(false);
-    const counters={scanned:0, keptStrict:0, keptEasy:0, missingBB:0};
     try{
-      const strict = await scanOnce(
-        { potIvX:potIv, minPotX:minPot, sameDirX:sameDir, useRegimeX:useRegime, useSqueezeX:useSqueeze, sqThreshX:sqThresh },
-        counters
-      );
-      counters.keptStrict = strict.length;
-      if (strict.length>0 || !easyMode){
-        setRows(strict);
-      }else{
-        const easy = await scanOnce(
-          { potIvX:potIv, minPotX:Math.min(minPot,0.10), sameDirX:false, useRegimeX:useRegime, useSqueezeX:false, sqThreshX:sqThresh },
-          counters
-        );
-        counters.keptEasy = easy.length;
-        setRows(easy);
+      // 1) sıkı koşul
+      let res = await scanOnce({minPotX:minPot, sameDirX:sameDir, useRegimeX:useRegime, useSqueezeX:useSqueeze, sqThreshX:sqThresh});
+      // 2) hiç yoksa kolaylaştır
+      if (res.length===0 && easyMode){
+        res = await scanOnce({minPotX:Math.min(minPot,0.10), sameDirX:false, useRegimeX:false, useSqueezeX:false, sqThreshX:sqThresh});
         setEasyApplied(true);
       }
+      // 3) tek coin filtrelemesi
+      if (filterSym){
+        res = res.filter(r=>r.sym===filterSym);
+      }
+      setRows(res);
+      setStats(s=>({...s, scanned:symbols.length, keptStrict: res.length, keptEasy: easyApplied? res.length : 0}));
+      setLastRunAt(new Date());
     } finally {
-      setStats(counters); setLastRunAt(new Date()); setLoading(false);
+      setLoading(false);
     }
   }
 
@@ -399,10 +406,10 @@ export default function PanelSinyal(){
     return ()=> clearInterval(t);
   },[
     authOk,symbols,refreshMs,mode,use3m,use30m,use4h,potIv,minPot,sameDir,useRegime,useSqueeze,sqThresh,
-    easyMode,useWhale,useOI,useFunding,atrK,capital,riskPct,onlyFavs
+    easyMode,useWhale,useOI,useFunding,atrK,capital,riskPct,onlyFavs,filterSym
   ]);
 
-  /* WS: aktif satırlar için TP/SL izleme */
+  /* WS: aktif satırlar için TP/SL izleme → Başarı % */
   const watchers = useRef({});
   useEffect(()=>{
     Object.values(watchers.current).forEach(w=>{try{w.sock&&w.sock.close();}catch{}});
@@ -454,14 +461,32 @@ export default function PanelSinyal(){
   if (!authOk) return <main style={{padding:16}}><div style={{opacity:.7}}>Yetki doğrulanıyor…</div></main>;
   if (!symbols.length) return <main style={{padding:16}}><div style={{opacity:.7}}>Semboller yükleniyor…</div></main>;
 
-  /* UI: açıklama metinleri */
-  const SCORE_EXPL = "Skor 0–100: 80–100 güçlü, 60–80 orta, 40–60 zayıf. MTF birleşik ağırlıklarla (3m/5m/15m/30m/1h/4h) hesaplanır.";
-  const SRC_EXPL   = "Kaynak: BB (Bollinger hedefi), MTF (çoklu zaman uyumu), ATR (volatilite mesafesi). Whale/OI/Funding teyit amaçlı küçük katkı ekler.";
+  /* Yardım (soru işareti) açıklaması */
+  const HELP_TEXT = (
+    <div style={{lineHeight:1.55}}>
+      <b>Skor:</b> 0–100. 80–100 güçlü, 60–80 orta, 40–60 zayıf. EMA/RSI/Stoch + BB konumu birleşik. <br/>
+      <b>Yön:</b> Kısa vadeli birleşik momentum (eşik ±0.06). <br/>
+      <b>Potansiyel:</b> BB (bant üst/alt mesafesi) veya ATR×2 ile kabaca hedef alanı (%). <br/>
+      <b>MTF aynı yön:</b> Açıkken tüm aktif zamanların yönü aynı olmalı. <br/>
+      <b>Rejim filtresi:</b> 15m/1h’de EMA20 üzerinde (long) veya altında (short) teyit. <br/>
+      <b>Sıkışma:</b> BB genişliği ≤ eşik (trend patlama arar). <br/>
+      <b>ATR k:</b> Stop/TP mesafesinde ATR çarpanı (varsayılan 1.5). <br/>
+      <b>Entry/SL/TP:</b> ATR varsa onu, yoksa BB genişliği; ikisi yoksa 15m seriden ATR hesaplanır. <br/>
+      <b>Önerilen Pozisyon:</b> (Sermaye × Risk%) / (Entry − SL). <br/>
+      <b>Time-Stop:</b> Maks. bekleme (ör. 60dk). <br/>
+      <b>Kaynak:</b> BB (hedef alan), MTF (çoklu zaman uyumu), ATR (mesafe). Whale/OI/Funding küçük teyit ekler. <br/>
+      <b>Başarı %:</b> Panel açıkken TP/SL dokunuşları canlı izlenir ve tarayıcıda saklanır; “Son X sinyal” üstünden hesaplanır.
+    </div>
+  );
+
+  /* Grid yardımcıları: hücre dikey çizgileri */
+  const gridCols = "1.15fr 0.7fr 0.7fr 0.9fr 2.4fr 2.4fr 1.2fr 0.9fr";
+  const cellBorder = (i, total)=> ({ paddingRight:10, borderRight: i<total-1 ? "1px solid #1f2742" : "none" });
 
   return (
     <main style={{minHeight:"100vh", background:"#0f1320", color:"#e6f0ff", padding:"16px 18px", paddingBottom:72}}>
-      {/* NAV */}
-      <nav style={{display:"flex",gap:16,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
+      {/* NAV + kontrol butonları */}
+      <nav style={{display:"flex",gap:12,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
         <button onClick={()=> (history.length>1 ? history.back() : router.push("/"))}
                 style={btnSm} type="button">← Geri</button>
         <Link href="/" style={{color:"#8bd4ff",fontWeight:900,fontSize:18,textDecoration:"none"}}>Kripto Gözü</Link>
@@ -469,7 +494,28 @@ export default function PanelSinyal(){
         <Link href="/panel" style={navL}>Panel</Link>
         <Link href="/whales" style={navL}>Balina</Link>
         <Link href="/balina2d" style={navL}>Balina2D</Link>
-        <span style={{marginLeft:"auto",display:"flex",gap:10,alignItems:"center"}}>
+
+        {/* Arama + Süzgeç */}
+        <span style={{marginLeft:"auto", display:"flex", gap:8, alignItems:"center"}}>
+          <input
+            value={q}
+            onChange={(e)=>setQ(e.target.value)}
+            placeholder="BTC, ETH, SOL…"
+            style={{ padding:"8px 10px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#fff", minWidth:160 }}
+          />
+          <button
+            onClick={()=>{ const s=normSym(q); if(s) router.push(`/coin/${s}`); }}
+            style={btnSm}
+            type="button"
+          >Ara</button>
+          <button
+            onClick={()=>{ const s=normSym(q); setFilterSym(s); }}
+            style={btnSm}
+            type="button"
+          >Süz</button>
+          {filterSym && (
+            <button onClick={()=>setFilterSym("")} style={btnSm} type="button">Filtreyi Temizle ({filterSym})</button>
+          )}
           <label style={lbl}><input type="checkbox" checked={easyMode} onChange={e=>setEasyMode(e.target.checked)}/> Kolay Mod</label>
           <button onClick={()=>setHelpOpen(v=>!v)} style={{...btnSm,padding:"6px 10px"}} type="button">?</button>
           <label style={lbl}>
@@ -487,12 +533,12 @@ export default function PanelSinyal(){
         Panel – Sinyal (PRO)
         <span style={{width:10,height:10,borderRadius:99,background:"#22d39a"}} />
         <span style={{fontSize:12,opacity:.75}}>
-          Tarandı: <b>{stats.scanned}</b> • Geçen(str.): <b>{stats.keptStrict}</b> • Geçen(easy): <b>{stats.keptEasy}</b> • Son: {lastRunAt? lastRunAt.toLocaleTimeString():"—"}
+          Tarandı: <b>{symbols.length}</b> • Gösterilen: <b>{rows.length}</b> • Son: {lastRunAt? lastRunAt.toLocaleTimeString():"—"}
         </span>
         {easyApplied && <span style={{marginLeft:8,padding:"3px 8px",borderRadius:8,border:"1px solid #314466",background:"#142235",color:"#9bd0ff",fontSize:12,fontWeight:800}}>Kolay Mod devrede</span>}
       </h1>
 
-      {/* Kontroller */}
+      {/* Filtre çubuğu */}
       <div style={{border:"1px solid #1f2742",borderRadius:12,padding:"10px 12px",marginBottom:12,background:"#0e1426"}}>
         <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",margin:"6px 0"}}>
           <label style={lbl}>
@@ -547,9 +593,8 @@ export default function PanelSinyal(){
             <input type="number" step="0.1" value={riskPct} onChange={e=>setRiskPct(Number(e.target.value)||0)} style={{...sel,width:90}}/>
           </label>
           <label style={lbl}>ATR k
-            <select value={String(atrK)} onChange={e=>setAtrK(Number(e.target.value))} style={sel}>
-              <option value="1.0">1.0</option><option value="1.25">1.25</option>
-              <option value="1.5">1.5</option><option value="2.0">2.0</option>
+            <select value={String(DEFAULT_ATR_K)} onChange={()=>{}} style={sel}>
+              <option value="1.5">1.5</option>
             </select>
           </label>
           <label style={lbl}>Time-Stop
@@ -563,34 +608,29 @@ export default function PanelSinyal(){
         </div>
       </div>
 
-      {/* Açıklamalar */}
+      {/* Yardım (soru işareti) */}
       {helpOpen && (
-        <div style={{border:"1px solid #25304a",background:"#101a30",borderRadius:10,padding:12,marginBottom:12,fontSize:13,lineHeight:1.5}}>
-          <b>Kolay Mod</b>: Sinyal çıkmazsa filtreleri otomatik gevşetir (min potansiyeli düşürür, MTF zorunluluğunu kaldırır, sıkışmayı kapatır).<br/>
-          <b>Skor</b>: {SCORE_EXPL}<br/>
-          <b>Kaynak</b>: {SRC_EXPL}<br/>
-          <b>Entry/SL/TP</b>: BB yoksa 15m seriden ATR hesaplanır; ATR×k ile SL, 1-2-3R TP yazılır. Time-Stop {timeStopMin} dk.<br/>
-          <b>Önerilen Poz.</b>: (Sermaye × Risk%) / (Entry–SL). Futures kaldıraç kullanıyorsan, gösterge kontrat adetini eşler.<br/>
-          <b>Başarı %</b>: Gösterilen sinyaller TP/SL'e dokununca yerel olarak işaretlenir (tarayıcıda saklanır). Hard refresh sonrası da görünür.
+        <div style={{border:"1px solid #25304a",background:"#101a30",borderRadius:10,padding:12,marginBottom:12,fontSize:13}}>
+          {HELP_TEXT}
         </div>
       )}
 
       {/* BAŞLIK */}
       <div style={{
         display:"grid",
-        gridTemplateColumns:"1.15fr 0.7fr 0.7fr 0.9fr 2.4fr 2.4fr 1.2fr 0.9fr",
+        gridTemplateColumns:gridCols,
         padding:"10px 12px", background:"#0e1424",
         border:"1px solid #1f2742", borderRadius:"12px 12px 0 0",
         color:"#a9b4c9", fontWeight:800
       }}>
-        <div>Coin</div>
-        <div>Yön</div>
-        <div title="Skor 0–100. 80–100 güçlü, 60–80 orta, 40–60 zayıf.">Skor ⓘ</div>
-        <div>Başarı %</div>
-        <div>Neden (kısa özet)</div>
-        <div>Entry • SL • TP1/2/3</div>
-        <div>Önerilen Poz.</div>
-        <div title="BB: Bollinger • MTF: çoklu zaman uyumu • ATR: volatilite">Kaynak ⓘ</div>
+        <div style={cellBorder(0,8)}>Coin</div>
+        <div style={cellBorder(1,8)}>Yön</div>
+        <div style={cellBorder(2,8)} title="Skor 0–100. 80–100 güçlü, 60–80 orta, 40–60 zayıf.">Skor ⓘ</div>
+        <div style={cellBorder(3,8)}>Başarı %</div>
+        <div style={cellBorder(4,8)}>Neden (kısa özet)</div>
+        <div style={cellBorder(5,8)}>Entry • SL • TP1/2/3</div>
+        <div style={cellBorder(6,8)}>Önerilen Poz.</div>
+        <div style={cellBorder(7,8)} title="BB: Bollinger • MTF: çoklu zaman uyumu • ATR: volatilite">Kaynak ⓘ</div>
       </div>
 
       {/* LİSTE */}
@@ -610,14 +650,14 @@ export default function PanelSinyal(){
           return (
             <div key={r.sym} style={{
               display:"grid",
-              gridTemplateColumns:"1.15fr 0.7fr 0.7fr 0.9fr 2.4fr 2.4fr 1.2fr 0.9fr",
+              gridTemplateColumns:gridCols,
               padding:"12px",
               borderTop: i===0 ? "none" : "1px solid #1f2742",
               alignItems:"center",
               background: i%2 ? "#0f1329" : "#0e1226"
             }}>
               {/* Coin */}
-              <div style={{display:"flex",alignItems:"center",gap:10,overflow:"hidden"}}>
+              <div style={{...cellBorder(0,8),display:"flex",alignItems:"center",gap:10,overflow:"hidden"}}>
                 <button onClick={()=> setFavs(p=> fav ? p.filter(x=>x!==r.sym) : [...p,r.sym])}
                         title={fav?"Favoriden çıkar":"Favorilere ekle"}
                         style={{background:"transparent",border:"none",cursor:"pointer",fontSize:18,lineHeight:1}}>{fav?"★":"☆"}</button>
@@ -628,31 +668,31 @@ export default function PanelSinyal(){
               </div>
 
               {/* Yön */}
-              <div style={{fontWeight:900,color:r.dir==="LONG"?"#22d39a":"#ff6b6b"}}>{r.dir}</div>
+              <div style={{...cellBorder(1,8),fontWeight:900,color:r.dir==="LONG"?"#22d39a":"#ff6b6b"}}>{r.dir}</div>
 
               {/* Skor */}
-              <div>{fmt(r.score,0)}</div>
+              <div style={cellBorder(2,8)}>{fmt(r.score,0)}</div>
 
               {/* Başarı % */}
-              <div title={`Son ${hs.total} sinyal • TP:${hs.tpHits} / SL:${hs.slHits}`}>{hs.rate? `${hs.rate}%` : "—"}</div>
+              <div style={cellBorder(3,8)} title={`Son ${hs.total} sinyal • TP:${hs.tpHits} / SL:${hs.slHits}`}>{hs.rate? `${hs.rate}%` : "—"}</div>
 
               {/* Neden */}
-              <div style={{opacity:.92, overflow:"hidden", textOverflow:"ellipsis"}}>{r.reasons}{r.potPct!=null && <span style={{opacity:.6}}> • Pot: ~{r.potPct}%</span>}</div>
+              <div style={{...cellBorder(4,8),opacity:.92, overflow:"hidden", textOverflow:"ellipsis"}}>{r.reasons}{r.potPct!=null && <span style={{opacity:.6}}> • Pot: ~{r.potPct}%</span>}</div>
 
               {/* Entry/SL/TP */}
-              <div style={{fontSize:13}}>
+              <div style={{...cellBorder(5,8),fontSize:13}}>
                 {plan
                   ? (<span>
                       Entry <b>{fmtPrice(r.entry)}</b> • SL <b>{fmtPrice(r.sl)}</b> •
                       TP1 <b>{fmtPrice(r.tp1)}</b> / TP2 <b>{fmtPrice(r.tp2)}</b> / TP3 <b>{fmtPrice(r.tp3)}</b>
-                      <span style={{opacity:.6}}> • ATR×{fmt(atrK,2)} • TS {timeStopMin}dk</span>
+                      <span style={{opacity:.6}}> • ATR×{fmt(DEFAULT_ATR_K,2)} • TS {timeStopMin}dk</span>
                     </span>)
                   : (<span style={{opacity:.6}}>ATR/BB yetersiz — plan hesaplanamadı</span>)
                 }
               </div>
 
               {/* Önerilen Poz. */}
-              <div style={{fontSize:13}}>
+              <div style={{...cellBorder(6,8),fontSize:13}}>
                 {plan
                   ? (pos>0
                       ? <span>Boyut: <b>{fmt(pos,3)}</b> adet • Risk: ~<b>{fmt(capital*(riskPct/100),2)} USDT</b> • <span style={{color:r.risk?.color}}>{r.risk?.txt||"—"}</span></span>
@@ -675,7 +715,7 @@ export default function PanelSinyal(){
   );
 }
 
-/* ===== stiller ===== */
+/* ===== Styles ===== */
 const navL = { color:"#d0d6e6", textDecoration:"none" };
 const lbl  = { display:"inline-flex", alignItems:"center", gap:8, padding:"6px 10px", border:"1px solid #2a2f45", background:"#121625", borderRadius:8 };
 const sel  = { padding:"6px 8px", background:"#0f1320", border:"1px solid #23283b", borderRadius:8, color:"#e6e6e6" };
