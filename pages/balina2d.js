@@ -1,133 +1,246 @@
-// components/Balina2D.jsx
-import { useEffect, useRef, useState } from "react";
+// pages/balina2d.js
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 
-/**
- * Binance Futures "forceOrder" (likidasyon) yayınını dinler.
- * 50.000$+ notional filtreler, BTC/ETH hariç "diğer coinler" için canlı akış.
- * NOT: Bu, hızlı ve sağlam bir “drop-in” bileşendir. Mevcut sayfana import ederek kullan.
- */
+/** === Ayarlar === */
+const MIN_USD = 50000; // <<< Eşik: 50.000 USD (istediğinde değiştir)
+const MAX_ITEMS = 200; // listede tutulacak maksimum kayıt
 
-const MIN_USD = 50000; // <<< Eşik burada. 200k'dan 50k'ya çekildi.
-const EXCLUDE = new Set(["BTCUSDT", "ETHUSDT"]);
-const MAX_ROWS = 200;
+/** === Yardımcılar === */
+const fmt = (v, d = 0) =>
+  v == null || isNaN(v)
+    ? "—"
+    : Number(v).toLocaleString("tr-TR", {
+        minimumFractionDigits: d,
+        maximumFractionDigits: d,
+      });
 
-function fmt(n, d = 2) {
-  if (n == null || isNaN(n)) return "—";
-  return Number(n).toLocaleString("tr-TR", { minimumFractionDigits: d, maximumFractionDigits: d });
-}
+const ts = (t) => {
+  try {
+    const d = new Date(t);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    return `${hh}:${mm}:${ss}`;
+  } catch {
+    return "—";
+  }
+};
 
-export default function Balina2D() {
-  const [rows, setRows] = useState([]);
+export default function Balina2DPage() {
+  const [items, setItems] = useState([]); // canlı akış
+  const [status, setStatus] = useState("hazırlanıyor");
+  const [subCount, setSubCount] = useState(0);
   const wsRef = useRef(null);
 
-  useEffect(() => {
-    const url = `wss://fstream.binance.com/stream?streams=!forceOrder@arr`;
-    let ws;
+  // sembolleri çek → BTC/ETH hariç USDT pariteleri
+  async function getSymbols() {
     try {
-      ws = new WebSocket(url);
+      const r = await fetch("https://fapi.binance.com/fapi/v1/exchangeInfo");
+      const j = await r.json();
+      const list = (j?.symbols || [])
+        .filter((s) => s.contractType !== "PERPETUAL" ? true : true) // tüm perpetual’lar kalsın
+        .filter((s) => s.status === "TRADING")
+        .filter((s) => s.quoteAsset === "USDT")
+        .map((s) => s.symbol)
+        .filter((s) => s !== "BTCUSDT" && s !== "ETHUSDT");
+      return list;
+    } catch {
+      return [];
+    }
+  }
+
+  useEffect(() => {
+    let ws;
+    let alive = true;
+
+    (async () => {
+      setStatus("semboller alınıyor…");
+      const symbols = await getSymbols();
+      if (!alive) return;
+      if (!symbols.length) {
+        setStatus("sembol yok / ağ hatası");
+        return;
+      }
+
+      // WebSocket /ws (SUBSCRIBE ile çoklu akış)
+      setStatus("bağlanıyor…");
+      ws = new WebSocket("wss://fstream.binance.com/ws");
       wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (!alive) return;
+        // aggTrade akışları
+        const params = symbols.map((s) => `${s.toLowerCase()}@aggTrade`);
+        const chunkSize = 200; // çok fazla stream varsa parça parça abone ol
+        let total = 0;
+        for (let i = 0; i < params.length; i += chunkSize) {
+          const chunk = params.slice(i, i + chunkSize);
+          ws.send(
+            JSON.stringify({
+              method: "SUBSCRIBE",
+              params: chunk,
+              id: 1 + i / chunkSize,
+            })
+          );
+          total += chunk.length;
+        }
+        setSubCount(total);
+        setStatus("açık");
+      };
 
       ws.onmessage = (ev) => {
         try {
-          const payload = JSON.parse(ev.data);
-          const data = Array.isArray(payload?.data) ? payload.data : [payload?.data].filter(Boolean);
+          const d = JSON.parse(ev.data);
+          // aggTrade olayı
+          if (d?.e === "aggTrade") {
+            const sym = d.s;
+            // güvenlik: BTC/ETH gelirse yine ele
+            if (sym === "BTCUSDT" || sym === "ETHUSDT") return;
 
-          const next = [];
-          for (const d of data) {
-            const o = d?.o;
-            if (!o) continue;
-            const sym = o.s;         // symbol
-            if (!sym || EXCLUDE.has(sym)) continue;
+            const price = +d.p;
+            const qty = +d.q;
+            if (!isFinite(price) || !isFinite(qty)) return;
 
-            // price * qty (ap var ise kullanılabilir; yoksa p)
-            const price = +o.ap || +o.p || 0;
-            const qty   = +o.q || 0;
-            const usd   = price * qty;
-            if (!isFinite(usd) || usd < MIN_USD) continue;
+            const notional = price * qty; // USDT paritesi → ~USD
+            if (notional < MIN_USD) return;
 
-            const side = o.S;        // BUY / SELL (likide olan taraf)
-            const ts   = Date.now();
+            // yön (m: buyer is market maker) → m=true genelde "satış baskısı" gibi okunur
+            const side = d.m ? "SELL" : "BUY";
 
-            next.push({
-              ts,
-              sym,
+            const row = {
+              t: d.T || d.E || Date.now(),
+              s: sym,
+              p: price,
+              q: qty,
+              usd: notional,
               side,
-              price,
-              qty,
-              usd
-            });
-          }
+            };
 
-          if (next.length) {
-            setRows((prev) => {
-              const merged = [...next, ...prev];
-              if (merged.length > MAX_ROWS) merged.length = MAX_ROWS;
-              return merged;
+            setItems((prev) => {
+              const next = [row, ...prev];
+              if (next.length > MAX_ITEMS) next.length = MAX_ITEMS;
+              return next;
             });
           }
         } catch {}
       };
-    } catch {}
+
+      ws.onerror = () => {
+        if (!alive) return;
+        setStatus("hata");
+      };
+      ws.onclose = () => {
+        if (!alive) return;
+        setStatus("kapalı");
+      };
+    })();
 
     return () => {
-      try { wsRef.current && wsRef.current.close(); } catch {}
+      alive = false;
+      try {
+        const w = wsRef.current;
+        if (w && w.readyState === 1) {
+          w.close();
+        }
+      } catch {}
     };
   }, []);
 
   return (
-    <div style={{ padding: 12 }}>
-      <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
-        <b style={{ color: "#8bd4ff", fontSize: 18 }}>Balina2D • Diğer Coinler (≥ {fmt(MIN_USD, 0)}$)</b>
-        <span style={{ opacity: .65 }}>(BTC/ETH hariç, likidasyon akışı)</span>
-      </div>
+    <main style={{ padding: 16 }}>
+      {/* NAV */}
+      <nav
+        style={{
+          display: "flex",
+          gap: 16,
+          alignItems: "center",
+          marginBottom: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <Link href="/" style={{ color: "#8bd4ff", fontWeight: 800 }}>
+          Ana Sayfa
+        </Link>
+        <Link href="/panel" style={{ color: "#d0d6e6" }}>
+          Panel
+        </Link>
+        <Link href="/whales" style={{ color: "#d0d6e6" }}>
+          Balina
+        </Link>
+        <Link href="/balina2d" style={{ color: "#fff", fontWeight: 700 }}>
+          Balina2D
+        </Link>
 
-      <div style={{
-        border: "1px solid #23283b",
-        borderRadius: 10,
-        overflow: "hidden",
-        background: "#121625"
-      }}>
-        <div style={{
+        <span style={{ marginLeft: "auto", opacity: 0.8 }}>
+          WS: <b>{status}</b> • Abone stream: <b>{subCount}</b> • Eşik:{" "}
+          <b>{fmt(MIN_USD)}</b> $
+        </span>
+      </nav>
+
+      {/* Tablo Başlığı */}
+      <div
+        style={{
           display: "grid",
-          gridTemplateColumns: "140px 110px 1fr 1fr 1fr",
+          gridTemplateColumns: "1fr 1.1fr 1.1fr 1fr 0.8fr",
+          gap: 0,
           padding: "10px 12px",
           background: "#0e1424",
           color: "#a9b4c9",
-          fontWeight: 700
-        }}>
-          <div>Zaman</div>
-          <div>Symbol</div>
-          <div>Yön</div>
-          <div>Notional (USD)</div>
-          <div>Fiyat × Miktar</div>
-        </div>
+          fontWeight: 700,
+          border: "1px solid #23283b",
+          borderRadius: "10px 10px 0 0",
+        }}
+      >
+        <div>Zaman</div>
+        <div>Sembol</div>
+        <div>Notional (USD)</div>
+        <div>Fiyat</div>
+        <div>Yön</div>
+      </div>
 
-        <div style={{ maxHeight: 520, overflowY: "auto" }}>
-          {rows.map((r) => {
-            const col = r.side === "BUY" ? "#22d39a" : "#ff6b6b";
-            const time = new Date(r.ts).toLocaleTimeString("tr-TR", { hour12: false });
+      {/* Liste */}
+      <div
+        style={{
+          border: "1px solid #23283b",
+          borderTop: "none",
+          borderRadius: "0 0 10px 10px",
+          overflow: "hidden",
+        }}
+      >
+        {items.length === 0 ? (
+          <div style={{ padding: 14, opacity: 0.7 }}>Henüz kayıt yok…</div>
+        ) : (
+          items.map((it, idx) => {
+            const col = it.side === "BUY" ? "#22d39a" : "#ff6b6b";
             return (
-              <div key={r.ts + r.sym + r.usd}
-                   style={{
-                     display: "grid",
-                     gridTemplateColumns: "140px 110px 1fr 1fr 1fr",
-                     padding: "8px 12px",
-                     borderTop: "1px solid #23283b",
-                     alignItems: "center"
-                   }}>
-                <div style={{ opacity: .85 }}>{time}</div>
-                <div style={{ fontWeight: 800, color: "#8bd4ff" }}>{r.sym}</div>
-                <div style={{ fontWeight: 800, color: col }}>{r.side}</div>
-                <div style={{ fontWeight: 800 }}>{fmt(r.usd, 0)}</div>
-                <div style={{ opacity: .85 }}>{fmt(r.price)} × {fmt(r.qty, 4)}</div>
+              <div
+                key={idx}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1.1fr 1.1fr 1fr 0.8fr",
+                  gap: 0,
+                  padding: "10px 12px",
+                  borderTop: "1px solid #23283b",
+                  alignItems: "center",
+                  background: idx % 2 ? "#121625" : "#101522",
+                }}
+              >
+                <div>{ts(it.t)}</div>
+                <div style={{ fontWeight: 800, color: "#8bd4ff" }}>{it.s}</div>
+                <div style={{ fontWeight: 800 }}>{fmt(it.usd)}</div>
+                <div>{fmt(it.p, 6)}</div>
+                <div style={{ fontWeight: 800, color: col }}>{it.side}</div>
               </div>
             );
-          })}
-          {!rows.length && (
-            <div style={{ padding: 12, opacity: .7 }}>Henüz ≥ {fmt(MIN_USD,0)}$ işlem düşmedi…</div>
-          )}
-        </div>
+          })
+        )}
       </div>
-    </div>
+
+      <div style={{ opacity: 0.6, marginTop: 10, fontSize: 12 }}>
+        Akış: Binance Futures <code>aggTrade</code> • BTC/ETH hariç USDT pariteleri • Eşik:{" "}
+        <b>{fmt(MIN_USD)}</b> $
+      </div>
+    </main>
   );
 }
