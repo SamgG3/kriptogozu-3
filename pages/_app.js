@@ -4,20 +4,20 @@ import Link from "next/link";
 
 try { require("../styles/globals.css"); } catch {}
 
-const ALLOWED = new Set(["kurucu","yonetici","arkadas"]);
-
 export default function MyApp({ Component, pageProps }) {
   const [user, setUser] = useState(null);
 
   useEffect(()=>{ try{ document.body.style.background = "#0b1020"; }catch{} },[]);
-  useEffect(()=>{ if(typeof window!=="undefined"){ const raw=localStorage.getItem("kgz_user"); if(raw){ try{ setUser(JSON.parse(raw)); }catch{} } }},[]);
+  useEffect(()=>{
+    if (typeof window !== "undefined") {
+      const raw = localStorage.getItem("kgz_user");
+      if (raw) { try { setUser(JSON.parse(raw)); } catch {} }
+    }
+  },[]);
   const logout = ()=>{ try{ localStorage.removeItem("kgz_user"); }catch{}; setUser(null); };
 
   let PriceBar = null;
   try { PriceBar = require("../components/PriceBar").default; } catch {}
-
-  const role = user?.role;
-  const canSeeSignal = role && ALLOWED.has(role);
 
   return (
     <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",background:"#0b1020",color:"#e6edf6"}}>
@@ -27,13 +27,13 @@ export default function MyApp({ Component, pageProps }) {
         {/* Logo → Ana sayfa */}
         <Link href="/" style={{fontWeight:900,color:"#9bd0ff", textDecoration:"none"}}>Kripto Gözü</Link>
 
-        {/* Nav */}
+        {/* Nav (Panel-Sinyal her zaman görünür; sayfa içi guard zaten var) */}
         <div style={{display:"flex", gap:10, alignItems:"center"}}>
           <Link href="/"           style={nav}>Ana Sayfa</Link>
           <Link href="/panel"     style={nav}>Panel</Link>
           <Link href="/whales"    style={nav}>Balina</Link>
           <Link href="/balina2d"  style={nav}>Balina2D</Link>
-          {canSeeSignal ? <Link href="/panel-sinyal" style={navStrong}>Panel-Sinyal</Link> : null}
+          <Link href="/panel-sinyal" style={navStrong}>Panel-Sinyal</Link>
         </div>
 
         {/* Sağ taraf */}
@@ -42,7 +42,7 @@ export default function MyApp({ Component, pageProps }) {
           {user ? (
             <>
               <span style={{ background:"#1f2a44", padding:"6px 10px", borderRadius:8, fontWeight:700 }}>
-                {user.name || user.username || "Kullanıcı"} {role? `• ${role}` : ""}
+                {user.name || user.username || "Kullanıcı"} {user.role ? `• ${user.role}` : ""}
               </span>
               <button onClick={logout} style={btn}>Çıkış</button>
             </>
@@ -55,7 +55,7 @@ export default function MyApp({ Component, pageProps }) {
         </div>
       </div>
 
-      {/* Kur varsa göster */}
+      {/* Kur barı (TL/USD/USDT) bozulmadan */}
       {PriceBar ? <PriceBar/> : null}
 
       <main style={{flex:1}}>
