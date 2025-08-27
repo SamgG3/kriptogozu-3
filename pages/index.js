@@ -1,5 +1,5 @@
 // pages/index.js
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 
@@ -158,6 +158,22 @@ export default function Home() {
   /* ========== UI ========= */
   return (
     <main style={{ padding: "16px 18px" }}>
+      {/* BASİT NAV (geri getirildi) */}
+      <nav
+        style={{
+          display: "flex",
+          gap: 16,
+          alignItems: "center",
+          marginBottom: 10,
+          flexWrap: "wrap",
+        }}
+      >
+        <Link href="/" style={{ color: "#8bd4ff", fontWeight: 800 }}>Ana Sayfa</Link>
+        <Link href="/panel" style={{ color: "#d0d6e6" }}>Panel</Link>
+        <Link href="/whales" style={{ color: "#d0d6e6" }}>Balina</Link>
+        <Link href="/balina2d" style={{ color: "#d0d6e6" }}>Balina2D</Link>
+      </nav>
+
       {/* Üst bar */}
       <div
         style={{
@@ -292,7 +308,7 @@ export default function Home() {
           const { longPct, shortPct } = biasFromLatest(latest);
           const risk = riskLabel(latest);
 
-          return (
+        return (
             <div
               key={sym}
               style={{
@@ -358,6 +374,34 @@ export default function Home() {
         {symbols.map((sym) => (
           <CoinCard key={sym} sym={sym} row={rows[sym]} ws={wsTicks[sym]} />
         ))}
+      </div>
+
+      {/* ALT BANT – (geri getirildi) */}
+      <div
+        style={{
+          marginTop: 14,
+          border: "1px solid #23283b",
+          borderRadius: 8,
+          overflow: "hidden",
+          background: "#0e1424",
+        }}
+      >
+        <div className="kgz-marq" style={{ whiteSpace: "nowrap", padding: "8px 0" }}>
+          <span style={{ paddingLeft: 24, color: "#d0d6e6", fontWeight: 700 }}>
+            —&nbsp; Tanrının Gözü — Kriptonun Gözü &nbsp;—&nbsp; Bu kanalda paylaşılanlar SPK
+            kuralları gereğince KESİNLİKLE yatırım tavsiyesi niteliğinde değildir. &nbsp;—
+            &nbsp; Tanrının Gözü — Kriptonun Gözü —
+          </span>
+        </div>
+        <style jsx>{`
+          @keyframes kgzScroll {
+            0% { transform: translateX(100%); }
+            100% { transform: translateX(-100%); }
+          }
+          .kgz-marq {
+            animation: kgzScroll 30s linear infinite;
+          }
+        `}</style>
       </div>
 
       <div style={{ opacity: 0.6, marginTop: 10, fontSize: 12 }}>
