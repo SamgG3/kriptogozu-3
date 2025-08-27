@@ -1,48 +1,40 @@
 // pages/login.js
-"use client";
-import React, { useState } from "react";
-import Link from "next/link";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/router";
 
-export default function LoginPage() {
-  const [id, setId] = useState("");
-  const [pw, setPw] = useState("");
-  const [err, setErr] = useState("");
+export default function Login() {
+  const router = useRouter();
+  const [name, setName] = useState("");
 
-  function onSubmit(e) {
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = localStorage.getItem("kgz_user");
+    if (raw) router.replace("/panel");
+  }, [router]);
+
+  const onSubmit = (e) => {
     e.preventDefault();
-    if (!id || !pw) { setErr("ID ve şifre zorunlu"); return; }
-
-    const user = { name: id, avatar: "" };
-    localStorage.setItem("kg-auth", "1");
-    localStorage.setItem("kg-user", JSON.stringify(user));
-    document.cookie = "kg-auth=1; path=/; Max-Age=86400";
-    document.cookie = `kg-user=${encodeURIComponent(JSON.stringify(user))}; path=/; Max-Age=86400`;
-
-    window.dispatchEvent(new Event("kg-auth-changed"));
-    window.location.href = "/";
-  }
+    const n = name.trim() || "Kullanıcı";
+    try { localStorage.setItem("kgz_user", JSON.stringify({ name: n })); } catch {}
+    router.replace("/panel");
+  };
 
   return (
-    <main style={{minHeight:"100vh", background:"#0f1320", color:"#e6f0ff", padding:24}}>
-      <h1 style={{marginTop:0}}>Giriş</h1>
-      <form onSubmit={onSubmit} style={{display:"grid", gap:12, maxWidth:360}}>
+    <main style={{ padding: 24 }}>
+      <h1 style={{ marginBottom: 12 }}>Giriş</h1>
+      <form onSubmit={onSubmit} style={{ display: "grid", gap: 12, maxWidth: 360 }}>
         <input
-          value={id} onChange={e=>setId(e.target.value)}
-          placeholder="Kullanıcı ID"
-          style={{padding:"10px 12px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1"}}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Adın (ör. Semih)"
+          style={{ padding: "10px 12px", background: "#121625", border: "1px solid #23283b", borderRadius: 10, color: "#fff" }}
         />
-        <input
-          type="password"
-          value={pw} onChange={e=>setPw(e.target.value)}
-          placeholder="Şifre"
-          style={{padding:"10px 12px", background:"#121826", border:"1px solid #2b3247", borderRadius:10, color:"#e8ecf1"}}
-        />
-        {err && <div style={{color:"#ff8a8a", fontWeight:700}}>{err}</div>}
-        <button type="submit"
-          style={{padding:"10px 14px", background:"#1e2a44", border:"1px solid #2c3960", borderRadius:10, color:"#fff", fontWeight:800}}>
-          Giriş Yap
+        <button
+          type="submit"
+          style={{ padding: "10px 12px", background: "#1a1f2e", border: "1px solid #2a2f45", borderRadius: 10, color: "#fff", fontWeight: 700 }}
+        >
+          Gir
         </button>
-        <Link href="/" style={{padding:"10px 14px", border:"1px solid #2c3960", borderRadius:10, color:"#cfe6ff", textAlign:"center"}}>Ana Sayfa</Link>
       </form>
     </main>
   );
