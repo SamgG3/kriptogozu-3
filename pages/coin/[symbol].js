@@ -38,7 +38,7 @@ const StochRSI=(cl,rp=14,kp=14,dp=3)=>{ const r=RSI(cl,rp); const n=r.length; co
     const mn=Math.min(...win), mx=Math.max(...win); K[i]=mx===mn?50:((r[i]-mn)/(mx-mn))*100; }
   for(let i=0;i<n;i++){ let s=0,c=0; for(let j=i-dp+1;j<=i;j++){ if(j>=0&&K[j]!=null){ s+=K[j]; c++; } } D[i]=c?s/c:null; } return {K,D}; };
 
-/* ===== SR & Trend ===== */
+/* ===== Trend (EMA20) ===== */
 const trendEval=(closes)=>{ if(!closes||closes.length<22) return "—";
   const e20=EMA(closes,20); const c=last(closes), e=last(e20), ep=e20[e20.length-2] ?? null;
   if([c,e,ep].some(x=>x==null)) return "—"; const slope=e-ep;
@@ -46,6 +46,37 @@ const trendEval=(closes)=>{ if(!closes||closes.length<22) return "—";
   if(c<e && slope<=0) return "SHORT";
   return "—";
 };
+
+/* ===== Destek/Direnç çıkarımı ===== */
+function findLevels(H,L,C, window=12, dedupPct=0.003){
+  const n=C?.length||0; if(!H||!L||!C||n<window*2+5) return {levels:[], supports:[], resistances:[]};
+  const raw=[];
+  for(let i=window;i<n-window;i++){
+    let isHigh=true,isLow=true;
+    for(let j=i-window;j<=i+window;j++){
+      if(H[j]>H[i]) isHigh=false;
+      if(L[j]<L[i]) isLow=false;
+      if(!isHigh && !isLow) break;
+    }
+    if(isHigh) raw.push({price:H[i], type:"R"});
+    if(isLow)  raw.push({price:L[i], type:"S"});
+  }
+  raw.sort((a,b)=>a.price-b.price);
+  const merged=[];
+  for(const lv of raw){
+    if(!merged.length){ merged.push({...lv, count:1}); continue; }
+    const last=merged[merged.length-1];
+    if(Math.abs(lv.price-last.price)/last.price <= dedupPct){
+      last.price=(last.price*last.count + lv.price)/(last.count+1);
+      last.count++;
+      if(last.type!==lv.type) last.type="SR";
+    }else merged.push({...lv, count:1});
+  }
+  const px = last(C);
+  const supports = merged.filter(x=>x.price<px).map(x=>x.price);
+  const resistances = merged.filter(x=>x.price>px).map(x=>x.price);
+  return { levels: merged.map(({price,type})=>({price,type})), supports, resistances, price:px };
+}
 
 export default function CoinDetail(){
   const router = useRouter();
@@ -59,8 +90,9 @@ export default function CoinDetail(){
   const [ind, setInd] = useState(null);
   const [trendMap, setTrendMap] = useState({});
   const [tick, setTick] = useState({ last:null, chg:null });
+  const [sr, setSR] = useState({ supports:[], resistances:[], price:null });
 
-  // fiyat WS (miniTicker)
+  /* fiyat WS (miniTicker) */
   useEffect(()=>{
     if(!symbol) return;
     const url = `wss://fstream.binance.com/stream?streams=${symbol.toLowerCase()}@miniTicker`;
@@ -77,7 +109,7 @@ export default function CoinDetail(){
     return ()=>{ try{ws && ws.close();}catch{} };
   }, [symbol]);
 
-  // indikatörleri yükle (REST)
+  /* candle fetch */
   async function getCandles(sym,intv,limit=300){
     try{
       const r=await fetch(`/api/futures/indicators?symbol=${sym}&interval=${intv}&limit=${limit}`,{cache:"no-store"});
@@ -102,6 +134,7 @@ export default function CoinDetail(){
     if(!symbol) return;
     const d = await getCandles(symbol, interval, 300); if(!d) return;
 
+    // indikatörler
     const ema20=EMA(d.C,20), ema50=EMA(d.C,50), ema200=EMA(d.C,200);
     const sma20=SMA(d.C,20), sma50=SMA(d.C,50), sma200=SMA(d.C,200);
     const rsi14 = RSI(d.C,14);
@@ -122,11 +155,15 @@ export default function CoinDetail(){
       atr14:last(atr14),
       closes: d.C
     });
+
+    // destek/direnç hesapla
+    const levels = findLevels(d.H,d.L,d.C, 12, 0.003);
+    setSR(levels);
   }
   useEffect(()=>{ loadAll(); }, [symbol, interval]);
   useEffect(()=>{ const t=setInterval(loadAll, 3000); return ()=>clearInterval(t); }, [symbol, interval]);
 
-  // trend matrisi
+  // trend matrisi (EMA20)
   useEffect(()=>{
     let mounted=true;
     (async()=>{
@@ -147,6 +184,21 @@ export default function CoinDetail(){
   }, [symbol]);
 
   const entry = tick.last ?? (ind?.closes ? last(ind.closes) : null);
+
+  // Trade planı: yakın 2 destek/2 direnç + TP/SL + R/R
+  const supSorted = [...(sr.supports||[])].sort((a,b)=>Math.abs(entry-a)-Math.abs(entry-b));
+  const resSorted = [...(sr.resistances||[])].sort((a,b)=>Math.abs(a-entry)-Math.abs(b-entry));
+
+  // LONG
+  const slLong = supSorted.find(v=>v < entry) ?? null;
+  const tpL = resSorted.slice(0,3);
+  const rrL = tpL.map(tp => (tp!=null && slLong!=null && entry!=null && entry>slLong) ? ( (tp-entry)/(entry-slLong) ) : null);
+
+  // SHORT
+  const slShort = resSorted.find(v=>v > entry) ?? null;
+  const supDesc = [...(sr.supports||[])].filter(v=>v<entry).sort((a,b)=>b-a);
+  const tpS = supDesc.slice(0,3);
+  const rrS = tpS.map(tp => (tp!=null && slShort!=null && entry!=null && slShort>entry) ? ( (entry-tp)/(slShort-entry) ) : null);
 
   return (
     <main style={{ padding:"14px 16px", fontSize:14, lineHeight:1.35 }}>
@@ -175,6 +227,49 @@ export default function CoinDetail(){
           ))}
         </div>
       </Box>
+
+      {/* Destek / Direnç (yakın) */}
+      <Box title="Destek / Direnç (En Yakınlar)">
+        <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))", gap:10}}>
+          <div>
+            <div style={{opacity:.8, marginBottom:6}}>Destekler</div>
+            {(sr.supports||[]).slice(-3).map((v,i)=> <KV key={"s"+i} name={`S${i+1}`} v={v} /> )}
+          </div>
+          <div>
+            <div style={{opacity:.8, marginBottom:6}}>Dirençler</div>
+            {(sr.resistances||[]).slice(0,3).map((v,i)=> <KV key={"r"+i} name={`R${i+1}`} v={v} /> )}
+          </div>
+        </div>
+      </Box>
+
+      {/* Trade Planı */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))", gap:10 }}>
+        <Box title="AL Trade Plan (Long)">
+          <KV name="Entry" v={entry} />
+          <KV name="SL" v={slLong} />
+          <div style={{borderTop:"1px dashed #2a355a", margin:"8px 0"}}/>
+          <KV name="TP1" v={tpL[0]} />
+          <KV name="TP2" v={tpL[1]} />
+          <KV name="TP3" v={tpL[2]} />
+          <div style={{borderTop:"1px dashed #2a355a", margin:"8px 0"}}/>
+          <KV name="R/R1" v={rrL[0]!=null ? Number(rrL[0]).toFixed(2) : "—"} d={2}/>
+          <KV name="R/R2" v={rrL[1]!=null ? Number(rrL[1]).toFixed(2) : "—"} d={2}/>
+          <KV name="R/R3" v={rrL[2]!=null ? Number(rrL[2]).toFixed(2) : "—"} d={2}/>
+        </Box>
+
+        <Box title="SAT Trade Plan (Short)">
+          <KV name="Entry" v={entry} />
+          <KV name="SL" v={slShort} />
+          <div style={{borderTop:"1px dashed #2a355a", margin:"8px 0"}}/>
+          <KV name="TP1" v={tpS[0]} />
+          <KV name="TP2" v={tpS[1]} />
+          <KV name="TP3" v={tpS[2]} />
+          <div style={{borderTop:"1px dashed #2a355a", margin:"8px 0"}}/>
+          <KV name="R/R1" v={rrS[0]!=null ? Number(rrS[0]).toFixed(2) : "—"} d={2}/>
+          <KV name="R/R2" v={rrS[1]!=null ? Number(rrS[1]).toFixed(2) : "—"} d={2}/>
+          <KV name="R/R3" v={rrS[2]!=null ? Number(rrS[2]).toFixed(2) : "—"} d={2}/>
+        </Box>
+      </div>
 
       {/* İndikatör Kutuları */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(280px,1fr))", gap:10 }}>
@@ -242,7 +337,7 @@ function Chip({ label, side }) {
   );
 }
 function KV({ name, v, d=2 }) {
-  const value = v==null ? "—" : (typeof v==="number" ? fmtPrice(v) : fmtPrice(Number(v)));
+  const value = v==null ? "—" : (typeof v==="number" ? Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d}) : v);
   return (
     <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:10, padding:"4px 0" }}>
       <div style={{ opacity:.85 }}>{name}</div>
