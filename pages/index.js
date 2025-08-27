@@ -169,7 +169,7 @@ export default function Home() {
           <h1 style={{ margin:0, fontSize:20 }}>Genel Panel</h1>
 
           <select value={interval} onChange={(e)=>setIntervalStr(e.target.value)}
-            style={{ padding:"8px 10px", background:"#121625", border:"1px solid #23283b", borderRadius:10, color:"#e6e6e6", marginLeft:10 }}>
+            style={{ padding:"8px 10px", background:"#121625", border:"1px solid "#23283b", borderRadius:10, color:"#e6e6e6", marginLeft:10 }}>
             {INTERVALS.map((x)=> <option key={x} value={x}>{x}</option>)}
           </select>
 
@@ -258,12 +258,11 @@ export default function Home() {
         </div>
       </main>
 
-      {/* ALT BANT – fixed en altta */}
+      {/* ALT BANT – fixed en altta (güncel metin) */}
       <div style={{ position:"fixed", left:0, right:0, bottom:0, zIndex:50, borderTop:"1px solid #23283b", background:"#0e1424" }}>
         <div className="kgz-marq" style={{ whiteSpace:"nowrap", padding:"8px 0" }}>
           <span style={{ paddingLeft:24, color:"#d0d6e6", fontWeight:700 }}>
-            — Tanrının Gözü — Kriptonun Gözü — Bu kanalda paylaşılanlar SPK kuralları gereğince
-            KESİNLİKLE yatırım tavsiyesi değildir. — Tanrının Gözü — Kriptonun Gözü —
+            Kriptonun Gözü -- Burada paylaşılanlar SPK kuralları gereğince KESİNLİKLE yatırım tavsiyesi değildir. ---  Tanrının Gözü
           </span>
         </div>
         <style jsx>{`
