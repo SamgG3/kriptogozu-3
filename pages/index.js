@@ -168,8 +168,18 @@ export default function Home() {
         <div style={{ display:"flex", gap:12, alignItems:"center", marginBottom:12, flexWrap:"wrap" }}>
           <h1 style={{ margin:0, fontSize:20 }}>Genel Panel</h1>
 
-          <select value={interval} onChange={(e)=>setIntervalStr(e.target.value)}
-            style={{ padding:"8px 10px", background:"#121625", border:"1px solid "#23283b", borderRadius:10, color:"#e6e6e6", marginLeft:10 }}>
+          <select
+            value={interval}
+            onChange={(e)=>setIntervalStr(e.target.value)}
+            style={{
+              padding:"8px 10px",
+              background:"#121625",
+              border:"1px solid #23283b",   // ← DÜZELTİLDİ
+              borderRadius:10,
+              color:"#e6e6e6",
+              marginLeft:10
+            }}
+          >
             {INTERVALS.map((x)=> <option key={x} value={x}>{x}</option>)}
           </select>
 
@@ -200,7 +210,7 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Tablo (24s Değişim + Risk dolduruldu) */}
+        {/* Tablo */}
         <div style={{ border:"1px solid #23283b", borderRadius:10, overflow:"hidden", marginBottom:14, background:"#121625" }}>
           <div style={{
             display:"grid", gridTemplateColumns:"1.2fr 1fr 1fr 1fr 0.8fr",
@@ -220,7 +230,6 @@ export default function Home() {
               <div key={sym} style={{ display:"grid", gridTemplateColumns:"1.2fr 1fr 1fr 1fr 0.8fr",
                 padding:"12px", borderTop:"1px solid #23283b", alignItems:"center" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                  {/* Favori yıldız */}
                   <button
                     onClick={(e)=>{ e.stopPropagation(); e.preventDefault(); toggleFav(sym); }}
                     title={isFav(sym) ? "Favoriden çıkar" : "Favorilere ekle"}
