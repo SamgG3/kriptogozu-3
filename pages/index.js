@@ -1,210 +1,417 @@
 // pages/index.js
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/router";
 
-/* ===== Sabitler ===== */
-const DEFAULTS = ["BTCUSDT","ETHUSDT","BNBUSDT"];
-const ALL_TFS  = ["1m","3m","5m","15m","30m","1h","2h","3h","4h","12h","1d","3d"];
+/* ==================== Ayarlar ==================== */
+const DEFAULTS = ["BTCUSDT", "ETHUSDT", "BNBUSDT"];
+const INTERVALS = ["1m","3m","5m","15m","30m","1h","2h","3h","4h","12h","1d","3d"];
 
-/* ===== Utils ===== */
-const fmt = (v,d=2)=> (v==null||isNaN(v)) ? "—" :
-  Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
-const fmtPrice = (v)=>{
-  if (v==null || isNaN(v)) return "—";
+/* ==================== Yardımcılar ==================== */
+const fmt = (v, d = 2) =>
+  v == null || isNaN(v)
+    ? "—"
+    : Number(v).toLocaleString("tr-TR", {
+        minimumFractionDigits: d,
+        maximumFractionDigits: d,
+      });
+
+const fmtPrice = (v) => {
+  if (v == null || isNaN(v)) return "—";
   const a = Math.abs(v);
-  const d = a>=100?2 : a>=1?4 : 6;
-  return Number(v).toLocaleString("tr-TR",{minimumFractionDigits:d, maximumFractionDigits:d});
+  const d = a >= 100 ? 2 : a >= 1 ? 4 : 6;
+  return Number(v).toLocaleString("tr-TR", {
+    minimumFractionDigits: d,
+    maximumFractionDigits: d,
+  });
 };
-const clamp = (x,min,max)=> Math.max(min, Math.min(max,x));
 
-function biasFromLatest(L){
-  if(!L) return { longPct:50, shortPct:50 };
-  const close=L.close, ema=L.ema20, rsi=L.rsi14, k=L.stochK, d=L.stochD, bu=L.bbUpper, bl=L.bbLower;
-  const emaDist = (close!=null && ema!=null) ? ((close-ema)/ema*100) : null;
-  const kCross  = (k!=null && d!=null) ? (k-d) : null;
-  const bandPos = (bu!=null && bl!=null && close!=null) ? ((close-bl)/(bu-bl)*100) : null;
-  const nEMA   = emaDist==null ? 0 : clamp(emaDist/3, -1, 1);
-  const nRSI   = rsi==null ? 0 : clamp((rsi-50)/25, -1, 1);
-  const nKxD   = kCross==null ? 0 : clamp(kCross/50, -1, 1);
-  const nBand  = bandPos==null ? 0 : clamp((bandPos-50)/30, -1, 1);
-  const score = 0.35*nEMA + 0.30*nRSI + 0.20*nKxD + 0.15*nBand;
-  const longPct = Math.round(((score+1)/2)*100);
-  return { longPct, shortPct: 100-longPct };
+const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
+
+/* Basit bias skoru (EMA, RSI, Stoch, Bollinger) */
+function biasFromLatest(L) {
+  if (!L) return { longPct: 50, shortPct: 50, score: 0 };
+  const close = L.close,
+    ema = L.ema20,
+    rsi = L.rsi14,
+    k = L.stochK,
+    d = L.stochD,
+    bu = L.bbUpper,
+    bl = L.bbLower;
+
+  const emaDist = close != null && ema != null ? ((close - ema) / ema) * 100 : null;
+  const kCross = k != null && d != null ? k - d : null;
+  const bandPos =
+    bu != null && bl != null && close != null ? ((close - bl) / (bu - bl)) * 100 : null;
+
+  const nEMA = emaDist == null ? 0 : clamp(emaDist / 3, -1, 1);
+  const nRSI = rsi == null ? 0 : clamp((rsi - 50) / 25, -1, 1);
+  const nKxD = kCross == null ? 0 : clamp(kCross / 50, -1, 1);
+  const nBand = bandPos == null ? 0 : clamp((bandPos - 50) / 30, -1, 1);
+
+  const wEMA = 0.35,
+    wRSI = 0.30,
+    wKxD = 0.20,
+    wBand = 0.15;
+
+  const score = wEMA * nEMA + wRSI * nRSI + wKxD * nKxD + wBand * nBand;
+  const longPct = Math.round(((score + 1) / 2) * 100);
+  const shortPct = 100 - longPct;
+  return { longPct, shortPct, score };
 }
 
-/* ===== Sayfa ===== */
+/* Risk etiketi (yaklaşık ATR yüzdesi veya BB genişliğine göre) */
+function riskLabel(L) {
+  const c = L?.close, atr = L?.atr14;
+  if (c && atr) {
+    const p = atr / c; // ~ volatilite
+    if (p < 0.008) return { txt: "Düşük", color: "#2ecc71" };
+    if (p < 0.02) return { txt: "Orta", color: "#f1c40f" };
+    return { txt: "Yüksek", color: "#e74c3c" };
+  }
+  return { txt: "—", color: "#9aa4b2" };
+}
+
+/* ==================== Sayfa ==================== */
 export default function Home() {
-  const [symbols, setSymbols] = useState(DEFAULTS);
+  const router = useRouter();
+
+  const [q, setQ] = useState("");
   const [interval, setIntervalStr] = useState("1m");
-  const [rows, setRows] = useState({});
+
+  const [symbols, setSymbols] = useState(DEFAULTS);
+  const [rows, setRows] = useState({});      // indikatör verileri
   const [loading, setLoading] = useState(false);
+
+  const [wsTicks, setWsTicks] = useState({}); // canlı fiyat/24s değişim
   const [auto, setAuto] = useState(true);
   const timer = useRef(null);
 
-  // Arama
-  const [q, setQ] = useState("");
+  /* ========== Arama ========= */
+  const onSearch = () => {
+    const t = q.trim().toUpperCase();
+    if (!t) return;
+    const sym = t.endsWith("USDT") ? t : t + "USDT";
+    router.push(`/coin/${sym}`);
+  };
+  const onReset = () => setQ("");
 
-  /* ===== miniTicker WS (BTC/ETH/BNB) — fiyat + 24s% ===== */
-  const [tickers, setTickers] = useState({});
-  const [miniStatus, setMiniStatus] = useState("—");
-  useEffect(()=>{
-    const list = DEFAULTS.map(s => s.toLowerCase()+"@miniTicker").join("/");
-    const url = `wss://fstream.binance.com/stream?streams=${list}`;
-    let ws;
-
-    function connect(){
-      try{
-        ws = new WebSocket(url);
-        setMiniStatus("connecting");
-        ws.onopen = ()=> setMiniStatus("open");
-        ws.onerror = ()=> setMiniStatus("error");
-        ws.onclose = ()=> setMiniStatus("closed");
-        ws.onmessage = (ev)=>{
-          try{
-            const d = JSON.parse(ev.data)?.data;
-            if(d && d.e==="24hrMiniTicker"){
-              setTickers(prev=>({ ...prev, [d.s]: { last:+d.c, pct:+d.P } }));
-            }
-          }catch{}
-        };
-      }catch{
-        setMiniStatus("error");
-      }
-    }
-    connect();
-    return ()=> { try{ ws && ws.close(); }catch{} };
-  }, []);
-
-  /* ===== REST indikatör fetch (9sn) ===== */
+  /* ========== İndikatör datası yükle ========= */
   async function load() {
     try {
       setLoading(true);
       const res = await Promise.all(
-        symbols.map(sym =>
-          fetch(`/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`, { cache:"no-store" })
-            .then(r=>r.json())
-            .catch(()=>null)
+        symbols.map((sym) =>
+          fetch(
+            `/api/futures/indicators?symbol=${sym}&interval=${interval}&limit=300`,
+            { cache: "no-store" }
+          )
+            .then((r) => r.json())
+            .catch(() => null)
         )
       );
-      const map={}; symbols.forEach((sym,i)=> map[sym]=res[i]);
+      const map = {};
+      symbols.forEach((sym, i) => (map[sym] = res[i]));
       setRows(map);
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+    }
   }
-  useEffect(()=>{ load(); }, [interval, symbols]);
-  useEffect(()=>{
+
+  useEffect(() => {
+    load();
+  }, [interval, symbols]);
+
+  useEffect(() => {
     if (timer.current) clearInterval(timer.current);
-    if (auto) timer.current = setInterval(load, 9000); // 9 sn
-    return ()=> clearInterval(timer.current);
+    if (auto) timer.current = setInterval(load, 10_000);
+    return () => clearInterval(timer.current);
   }, [auto, interval, symbols]);
 
-  /* ===== Arama ===== */
-  function onSearch(){
-    if(!q) return;
-    const s = q.trim().toUpperCase(); if(!s) return;
-    const sym = s.endsWith("USDT") ? s : (s + "USDT");
-    setSymbols([sym]); // sadece aranan coin
-  }
-  function onReset(){
-    setSymbols(DEFAULTS);
-    setQ("");
-  }
+  /* ========== WebSocket (miniTicker) ========= */
+  useEffect(() => {
+    if (!symbols?.length) return;
+    const streams = symbols.map((s) => `${s.toLowerCase()}@miniTicker`).join("/");
+    const url = `wss://fstream.binance.com/stream?streams=${streams}`;
+    let ws;
+    try {
+      ws = new WebSocket(url);
+      ws.onmessage = (ev) => {
+        try {
+          const d = JSON.parse(ev.data)?.data;
+          if (d?.s) {
+            setWsTicks((prev) => ({
+              ...prev,
+              [d.s]: { last: +d.c, chg: +d.P },
+            }));
+          }
+        } catch {}
+      };
+    } catch {}
+    return () => {
+      try {
+        ws && ws.close();
+      } catch {}
+    };
+  }, [symbols]);
 
+  /* ========== UI ========= */
   return (
-    <main style={{padding:"16px 18px"}}>
-      {/* Üst satır */}
-      <div style={{display:"flex", gap:12, alignItems:"center", marginBottom:12, flexWrap:"wrap"}}>
-        <h1 style={{margin:0, fontSize:20}}>Kripto Gözü • Genel Panel</h1>
-        <span style={{opacity:.7}}>(kartlarda özet • detay için tıkla)</span>
+    <main style={{ padding: "16px 18px" }}>
+      {/* Üst bar */}
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          alignItems: "center",
+          marginBottom: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <h1 style={{ margin: 0, fontSize: 20 }}>Kripto Gözü • Genel Panel</h1>
+        <span style={{ opacity: 0.7 }}>(kartlarda AI özet • detay için tıkla)</span>
 
-        <select value={interval} onChange={e=>setIntervalStr(e.target.value)}
-          style={{padding:"8px 10px", background:"#121625", border:'1px solid #23283b', borderRadius:10, color:"#e6e6e6", marginLeft:10}}>
-          {ALL_TFS.map(x=><option key={x} value={x}>{x}</option>)}
+        <select
+          value={interval}
+          onChange={(e) => setIntervalStr(e.target.value)}
+          style={{
+            padding: "8px 10px",
+            background: "#121625",
+            border: "1px solid #23283b",
+            borderRadius: 10,
+            color: "#e6e6e6",
+            marginLeft: 10,
+          }}
+        >
+          {INTERVALS.map((x) => (
+            <option key={x} value={x}>
+              {x}
+            </option>
+          ))}
         </select>
 
-        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="BTC, ETH, SOL…"
-               style={{padding:"8px 10px", background:"#121625", border:'1px solid #23283b', borderRadius:10, color:"#e6e6e6'}}/>
-        <button onClick={onSearch} style={btn}>Ara</button>
-
-        <button onClick={onReset} style={btn}>Sıfırla</button>
-        <button onClick={load} disabled={loading} style={btn}>
-          {loading? "Yükleniyor…" : "Yenile"}
+        <button
+          onClick={load}
+          disabled={loading}
+          style={{
+            padding: "8px 12px",
+            background: "#1a1f2e",
+            border: "1px solid #2a2f45",
+            borderRadius: 10,
+            color: "#fff",
+            fontWeight: 700,
+          }}
+        >
+          {loading ? "Yükleniyor…" : "Yenile"}
         </button>
 
-        <label style={{marginLeft:8, display:"flex", alignItems:"center", gap:8}}>
-          <input type="checkbox" checked={auto} onChange={e=>setAuto(e.target.checked)}/>
-          9 sn’de bir otomatik yenile
+        <label style={{ marginLeft: 8, display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={auto}
+            onChange={(e) => setAuto(e.target.checked)}
+          />
+          10 sn’de bir otomatik yenile
         </label>
 
-        <span style={{marginLeft:"auto", fontSize:12, opacity:.75}}>
-          WS (miniTicker): <b>{miniStatus}</b>
-        </span>
+        {/* Arama Alanı */}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: "auto" }}>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="BTC, ETH, SOL…"
+            style={{
+              padding: "8px 10px",
+              background: "#121625",
+              border: "1px solid #23283b",
+              borderRadius: 10,
+              color: "#fff",
+              minWidth: 180,
+            }}
+          />
+          <button
+            onClick={onSearch}
+            style={{
+              padding: "8px 10px",
+              background: "#1a1f2e",
+              border: "1px solid #2a2f45",
+              borderRadius: 10,
+              color: "#fff",
+              fontWeight: 700,
+            }}
+          >
+            Ara
+          </button>
+          <button
+            onClick={onReset}
+            style={{
+              padding: "8px 10px",
+              background: "#1a1f2e",
+              border: "1px solid #2a2f45",
+              borderRadius: 10,
+              color: "#fff",
+              fontWeight: 700,
+            }}
+          >
+            Sıfırla
+          </button>
+        </div>
       </div>
 
-      {/* miniTicker WS özet */}
-      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:8, marginBottom:12}}>
-        {DEFAULTS.map(sym=>{
-          const t = tickers[sym] || {};
-          const col = t.pct==null ? "#9aa4b2" : (t.pct>=0 ? "#22d39a" : "#ff6b6b");
+      {/* Sembol listesi (WS + indikatör) */}
+      <div
+        style={{
+          border: "1px solid #23283b",
+          borderRadius: 10,
+          overflow: "hidden",
+          marginBottom: 14,
+          background: "#121625",
+        }}
+      >
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1.2fr 1fr 1fr 1fr 0.8fr",
+            gap: 0,
+            padding: "10px 12px",
+            background: "#0e1424",
+            color: "#a9b4c9",
+            fontWeight: 700,
+          }}
+        >
+          <div>• WebSocket: Canlı</div>
+          <div>Fiyat</div>
+          <div>Long/Short</div>
+          <div>24s Değişim</div>
+          <div>Risk</div>
+        </div>
+
+        {symbols.map((sym) => {
+          const w = wsTicks[sym] || {};
+          const latest = rows[sym]?.latest || null;
+          const { longPct, shortPct } = biasFromLatest(latest);
+          const risk = riskLabel(latest);
+
           return (
-            <div key={sym} style={{background:"#121a33", border:"1px solid #202945", borderRadius:10, padding:10}}>
-              <div style={{display:"flex", justifyContent:"space-between", alignItems:"center"}}>
-                <b style={{color:"#8bd4ff"}}>{sym}</b>
-                <span style={{color:col, fontWeight:800}}>
-                  {t.pct==null? "—" : (t.pct>=0?"+":"")+fmt(t.pct,2)+"%"}
+            <div
+              key={sym}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1.2fr 1fr 1fr 1fr 0.8fr",
+                gap: 0,
+                padding: "12px",
+                borderTop: "1px solid #23283b",
+                alignItems: "center",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Link href={`/coin/${sym}`} style={{ color: "#8bd4ff", fontWeight: 800 }}>
+                  {sym}
+                </Link>
+              </div>
+
+              <div style={{ fontWeight: 700 }}>{fmtPrice(w.last)}</div>
+
+              <div style={{ fontWeight: 700 }}>
+                <span style={{ color: "#22d39a" }}>Long {fmt(longPct, 0)}%</span>
+                <span style={{ opacity: 0.6 }}> / </span>
+                <span style={{ color: "#ff6b6b" }}>Short {fmt(shortPct, 0)}%</span>
+              </div>
+
+              <div
+                style={{
+                  color:
+                    w.chg == null ? "#d0d6e6" : w.chg >= 0 ? "#22d39a" : "#ff6b6b",
+                  fontWeight: 800,
+                }}
+              >
+                {w.chg == null ? "—" : (w.chg >= 0 ? "+" : "") + fmt(w.chg, 2) + "%"}
+              </div>
+
+              <div>
+                <span
+                  style={{
+                    padding: "4px 8px",
+                    borderRadius: 20,
+                    border: "1px solid #2a2f45",
+                    background: "#151a2b",
+                    color: risk.color,
+                    fontWeight: 800,
+                  }}
+                >
+                  {risk.txt}
                 </span>
               </div>
-              <div style={{opacity:.85, marginTop:6}}>Son Fiyat: <b>{fmtPrice(t.last)}</b></div>
             </div>
           );
         })}
       </div>
 
-      {/* Kartlar */}
-      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))", gap:12}}>
-        {symbols.map(sym => <CoinCard key={sym} sym={sym} row={rows[sym]} />)}
+      {/* Hızlı Özet Kartları */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+          gap: 12,
+        }}
+      >
+        {symbols.map((sym) => (
+          <CoinCard key={sym} sym={sym} row={rows[sym]} ws={wsTicks[sym]} />
+        ))}
+      </div>
+
+      <div style={{ opacity: 0.6, marginTop: 10, fontSize: 12 }}>
+        Bu sayfadaki veriler otomatik olarak 10 sn’de bir yenilenir; yatırım
+        tavsiyesi değildir.
       </div>
     </main>
   );
 }
 
-/* ===== Kart Bileşeni ===== */
-function CoinCard({ sym, row }) {
+/* ==================== Kart ==================== */
+function CoinCard({ sym, row, ws }) {
   const L = row?.latest || {};
-  const close = L?.close;
-
+  const close = ws?.last ?? L?.close;
   const { longPct, shortPct } = biasFromLatest(L);
-  const signal = longPct >= 55 ? "LONG" : shortPct >= 55 ? "SHORT" : "NÖTR";
-  const border = signal === "LONG" ? "#1f7a4f" : signal === "SHORT" ? "#7a2e2e" : "#2a2f45";
+  const signal = longPct >= 55 ? "AL" : shortPct >= 55 ? "SAT" : "NÖTR";
+  const color = signal === "AL" ? "#20c997" : signal === "SAT" ? "#ff6b6b" : "#89a";
+  const border = signal === "AL" ? "#1f7a4f" : signal === "SAT" ? "#7a2e2e" : "#2a2f45";
 
   return (
-    <Link href={`/coin/${sym}`} style={{ textDecoration:"none" }}>
-      <div style={{
-        background:"#151a2b",
-        border:`1px solid ${border}`,
-        borderRadius:12,
-        padding:14,
-        display:"grid",
-        gridTemplateColumns:"1fr auto",
-        alignItems:"center",
-        gap:10,
-        minHeight:100
-      }}>
-        <div style={{display:"grid", gap:4}}>
-          <div style={{fontWeight:800, fontSize:18, color:"#8bd4ff"}}>{sym}</div>
-          <div style={{opacity:.85}}>Son Fiyat: <b>{fmtPrice(close)}</b></div>
-          <div style={{opacity:.9, marginTop:4}}>
-            <span style={{color:"#20c997", fontWeight:700}}>Long {fmt(longPct,0)}%</span>
-            <span style={{opacity:.7}}> / </span>
-            <span style={{color:"#ff6b6b", fontWeight:700}}>Short {fmt(shortPct,0)}%</span>
+    <Link href={`/coin/${sym}`} style={{ textDecoration: "none" }}>
+      <div
+        style={{
+          background: "#151a2b",
+          border: `1px solid ${border}`,
+          borderRadius: 12,
+          padding: 14,
+          display: "grid",
+          gridTemplateColumns: "1fr auto",
+          alignItems: "center",
+          gap: 10,
+          minHeight: 90,
+        }}
+      >
+        <div style={{ display: "grid", gap: 4 }}>
+          <div style={{ fontWeight: 800, fontSize: 18, color: "#8bd4ff" }}>{sym}</div>
+          <div style={{ opacity: 0.85 }}>
+            Son Fiyat: <b>{fmtPrice(close)}</b>
           </div>
         </div>
-        <div style={{textAlign:"right"}}>
-          <div style={{fontWeight:800, color: signal==="LONG" ? "#20c997" : signal==="SHORT" ? "#ff6b6b" : "#89a"}}>{signal}</div>
-          <div style={{opacity:.6, fontSize:12, marginTop:6}}>Tıkla → detay</div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontWeight: 800, color }}>{signal}</div>
+          <div style={{ opacity: 0.9, marginTop: 4 }}>
+            <span style={{ color: "#20c997", fontWeight: 700 }}>
+              Long {fmt(longPct, 0)}%
+            </span>
+            <span style={{ opacity: 0.7 }}> / </span>
+            <span style={{ color: "#ff6b6b", fontWeight: 700 }}>
+              Short {fmt(shortPct, 0)}%
+            </span>
+          </div>
+          <div style={{ opacity: 0.6, fontSize: 12, marginTop: 6 }}>Tıkla → detay</div>
         </div>
       </div>
     </Link>
   );
 }
-
-const btn = {padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:700, cursor:"pointer"};
