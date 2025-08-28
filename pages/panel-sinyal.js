@@ -808,13 +808,25 @@ export default function PanelSinyal(){
         }catch{}
 
 function finalize(tag){
+  // Eğer SL geldiyse ve daha önce hiç TP vurmadıysa => STOP say
+  if (tag === "SL") {
+    if (state.tp2Hit) tag = "TP2";
+    else if (state.tp1Hit) tag = "TP1";
+    else tag = "STOP"; // yeni ekleme
+  }
+
   markResolved(r.sym, tag, r);
-  const success = tag!=="SL";
-  const featKeys = []; // ...
+
+  // Öğrenme için sadece TP'ler başarı sayılır
+  const success = (tag === "TP1" || tag === "TP2" || tag === "TP3");
+  const featKeys = [];
   featKeys.push(`dir_${r.dir}`);
   if (r.potSource) featKeys.push(`pot_${r.potSource}`);
   aiLearnUpdate(featKeys, r.sym, success);
+
   clearPlan(r.sym);
+}
+
 }
 
         }
