@@ -1235,7 +1235,7 @@ function AiWeightsPanel({ onClose }){
 /* ===== Styles ===== */
 const navL = { color:"#d0d6e6", textDecoration:"none" };
 const lbl  = { display:"inline-flex", alignItems:"center", gap:8, padding:"6px 10px", border:"1px solid #2a2f45", background:"#121625", borderRadius:8 };
-const sel  = { padding:"6px 8px", background:"#0f1320", border:"1px solid "#23283b", borderRadius:8, color:"#e6e6e6" };
+const sel  = { padding:"6px 8px", background:"#0f1320", border:"1px solid #23283b", borderRadius:8, color:"#e6e6e6" };
 const btnSm= { padding:"6px 10px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:8, color:"#fff", cursor:"pointer" };
 const btnPrimary = { padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:800, cursor:"pointer" };
 const chip = { padding:"6px 10px", border:"1px solid #2a2f45", borderRadius:8, background:"#101a30" };
