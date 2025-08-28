@@ -250,27 +250,66 @@ function clearPlan(sym){
 const HIST_KEY = "kgz_sig_hist_v1";
 function loadHist(){ try{ return JSON.parse(localStorage.getItem(HIST_KEY)||"[]"); }catch{ return []; } }
 function saveHist(arr){ try{ localStorage.setItem(HIST_KEY, JSON.stringify(arr.slice(-400))); }catch{} }
+
+/**
+ * Bir sembol için 7g varsayılan pencerede özet istatistikler.
+ * - tp1/tp2/tp3: o katmanlara kadar ulaşan işlemler
+ * - sl: stop-loss ile kapananlar
+ * - ts: time-stop ile kapananlar
+ * - open: halen kapanmamış (resolved yok)
+ * - total: pencere içindeki tüm kayıt sayısı (açıklar dahil)
+ * - closed: kapanmış (TP/SL/TS) toplamı
+ * - rate: kapanmışlar içinde TP yüzdesi (TS ve SL hariç)
+ */
 function histStatsFor(sym, days=7){
-  const now = Date.now(), windowMs = days*24*60*60*1000;
-  const arr = loadHist().filter(x => x.sym === sym && (now - x.ts) <= windowMs);
+  const now = Date.now();
+  const windowMs = days*24*60*60*1000;
+  const arr = loadHist().filter(x => (now - x.ts) <= windowMs && x.sym === sym);
 
-  const total = arr.length;
-  const tp1 = arr.filter(x => x.resolved === "TP1").length;
-  const tp2 = arr.filter(x => x.resolved === "TP2").length;
-  const tp3 = arr.filter(x => x.resolved === "TP3").length;
-  const tpAny = tp1 + tp2 + tp3;
+  let tp1=0,tp2=0,tp3=0,sl=0,ts=0,open=0;
+  for (const h of arr){
+    const tag = h.resolved;
+    if (!tag){ open++; continue; }
+    if (tag === "SL") sl++;
+    else if (tag === "TS") ts++;
+    else if (tag === "TP1") tp1++;
+    else if (tag === "TP2") tp2++;
+    else if (tag === "TP3") tp3++;
+  }
+  const total  = arr.length;
+  const closed = tp1 + tp2 + tp3 + sl + ts;
+  const tpHits = tp1 + tp2 + tp3;
 
-  const sl  = arr.filter(x => x.resolved === "SL").length;
-  const ts  = arr.filter(x => x.resolved === "TS").length;          // time-stop
-  const open= arr.filter(x => !x.resolved).length;
+  // Kapanmışlar içindeki TP yüzdesi (TS ve SL’i başarısız sayar)
+  const rate = closed ? Math.round((tpHits / closed) * 100) : 0;
 
-  // Oran: TS’leri nötr say, yalnızca TP vs SL bazlı başarı
-  const denom = tpAny + sl;
-  const rate  = denom ? Math.round((tpAny/denom)*100) : 0;
-
-  return { total, tp1, tp2, tp3, tpAny, sl, ts, open, rate };
-
+  return { total, closed, tp1, tp2, tp3, tpHits, sl, ts, open, rate };
 }
+
+/** 7 gün genel özet (sembolden bağımsız) */
+function histSummary(days=7){
+  const now = Date.now();
+  const windowMs = days*24*60*60*1000;
+  const arr = loadHist().filter(x => (now - x.ts) <= windowMs);
+
+  let tp1=0,tp2=0,tp3=0,sl=0,ts=0,open=0;
+  for (const h of arr){
+    const tag = h.resolved;
+    if (!tag){ open++; continue; }
+    if (tag === "SL") sl++;
+    else if (tag === "TS") ts++;
+    else if (tag === "TP1") tp1++;
+    else if (tag === "TP2") tp2++;
+    else if (tag === "TP3") tp3++;
+  }
+  const total  = arr.length;
+  const closed = tp1 + tp2 + tp3 + sl + ts;
+  const tpHits = tp1 + tp2 + tp3;
+  const rate = closed ? Math.round((tpHits / closed) * 100) : 0;
+
+  return { total, closed, tp1, tp2, tp3, tpHits, sl, ts, open, rate };
+}
+
 function histSummary(days=7){
   const now = Date.now(), windowMs = days*24*60*60*1000;
   const arr = loadHist().filter(x => (now - x.ts) <= windowMs);
