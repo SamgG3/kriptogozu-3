@@ -1129,13 +1129,7 @@ useEffect(() => {
         <div style={cellBorder(0,9)}>Coin</div>
         <div style={cellBorder(1,9)}>Yön</div>
         <div style={cellBorder(2,9)}>Skor <span title="AI Boost dahil">ⓘ</span></div>
-        <div
-  style={cellBorder(3,9)}
-  title={`7g • TP1:${hs.tp1} • TP2:${hs.tp2} • TP3:${hs.tp3} / SL:${hs.sl} • TS:${hs.ts} • Açık:${hs.open} • Toplam:${hs.total}`}
->
-  {hs.rate ? `${hs.rate}%` : "—"}
-</div>
-
+        <div style={cellBorder(3,9)}>Başarı % (7g)</div>
         <div style={cellBorder(4,9)}>S/R (yakın)</div>
         <div style={cellBorder(5,9)}>Trend / ADX / Div</div>
         <div style={cellBorder(6,9)}>Entry • SL • TP1/2/3</div>
