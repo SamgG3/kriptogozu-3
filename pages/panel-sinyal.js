@@ -251,46 +251,25 @@ const HIST_KEY = "kgz_sig_hist_v1";
 function loadHist(){ try{ return JSON.parse(localStorage.getItem(HIST_KEY)||"[]"); }catch{ return []; } }
 function saveHist(arr){ try{ localStorage.setItem(HIST_KEY, JSON.stringify(arr.slice(-400))); }catch{} }
 function histStatsFor(sym, days=7){
-  const now = Date.now(), windowMs = days*24*60*60*1000;
-  const arr = loadHist().filter(x => x.sym === sym && (now - x.ts) <= windowMs);
-
+  const now=Date.now(), windowMs=days*24*60*60*1000;
+  const arr = loadHist().filter(x=>x.sym===sym && (now-x.ts)<=windowMs);
   const total = arr.length;
-  const tp1 = arr.filter(x => x.resolved === "TP1").length;
-  const tp2 = arr.filter(x => x.resolved === "TP2").length;
-  const tp3 = arr.filter(x => x.resolved === "TP3").length;
-  const tpAny = tp1 + tp2 + tp3;
-
-  const sl  = arr.filter(x => x.resolved === "SL").length;
-  const ts  = arr.filter(x => x.resolved === "TS").length;          // time-stop
-  const open= arr.filter(x => !x.resolved).length;
-
-  // Oran: TS’leri nötr say, yalnızca TP vs SL bazlı başarı
-  const denom = tpAny + sl;
-  const rate  = denom ? Math.round((tpAny/denom)*100) : 0;
-
-  return { total, tp1, tp2, tp3, tpAny, sl, ts, open, rate };
-
+  const tpHits = arr.filter(x=>x.resolved && x.resolved.startsWith("TP")).length;
+  // TS, SL gibi sayılır
+  const slHits = arr.filter(x=> x.resolved==="SL" || x.resolved==="TS").length;
+  const rate = total? Math.round((tpHits/total)*100) : 0;
+  return { total, tpHits, slHits, rate };
 }
 function histSummary(days=7){
-  const now = Date.now(), windowMs = days*24*60*60*1000;
-  const arr = loadHist().filter(x => (now - x.ts) <= windowMs);
-
+  const now=Date.now(), windowMs=days*24*60*60*1000;
+  const arr = loadHist().filter(x=> (now-x.ts)<=windowMs);
   const total = arr.length;
-  const tp1 = arr.filter(x => x.resolved === "TP1").length;
-  const tp2 = arr.filter(x => x.resolved === "TP2").length;
-  const tp3 = arr.filter(x => x.resolved === "TP3").length;
-  const tpAny = tp1 + tp2 + tp3;
-
-  const sl  = arr.filter(x => x.resolved === "SL").length;
-  const ts  = arr.filter(x => x.resolved === "TS").length;
-  const open= arr.filter(x => !x.resolved).length;
-
-  const denom = tpAny + sl;
-  const rate  = denom ? Math.round((tpAny/denom)*100) : 0;
-
-  return { total, tp1, tp2, tp3, tpAny, sl, ts, open, rate };
+  const tpHits = arr.filter(x=>x.resolved && x.resolved.startsWith("TP")).length;
+  // TS, SL gibi sayılır
+  const slHits = arr.filter(x=> x.resolved==="SL" || x.resolved==="TS").length;
+  const rate = total? Math.round((tpHits/total)*100) : 0;
+  return { total, tpHits, slHits, rate };
 }
-
 
 /* ===== Öğrenen AI (yerel istatistik) ===== */
 const LEARN_KEY = "kgz_sig_learn_v1";
@@ -786,136 +765,80 @@ export default function PanelSinyal(){
     minQuote24h, adxMin, excludeHyperVol, hyperVolPct, maxRows, aiEnabled,
     rrMin, corrMin, gateByBTC, useBTCDom, btcdThresh
   ]);
-/* WS: TP/SL izleme + trailing + başarı + ÖĞRENME güncellemesi */
-const watchers = useRef({});
+  /* WS: TP/SL izleme + trailing + başarı + ÖĞRENME + ✅ Time-Stop */
+  const watchers = useRef({});
+  useEffect(()=>{
+    Object.values(watchers.current).forEach(w=>{try{w.sock&&w.sock.close();}catch{}});
+    watchers.current={};
+    rows.forEach(r=>{
+      if (!r?.sym || !r?.entry || !r?.sl || !r?.tp1) return;
+      const url=`wss://fstream.binance.com/ws/${r.sym.toLowerCase()}@miniTicker`;
+      const sock=new WebSocket(url);
+      const state={sock, resolved:false, tp1Hit:false, tp2Hit:false};
+      sock.onmessage=(ev)=>{
+        if (state.resolved) return;
+        try{
+          const d=JSON.parse(ev.data);
+          const c=d?.c?+d.c:null; if(!c) return;
 
-useEffect(() => {
-  // Var olan WS’leri kapat
-  Object.values(watchers.current).forEach(w => { try { w.sock && w.sock.close(); } catch {} });
-  watchers.current = {};
-
-  rows.forEach(r => {
-    if (!r?.sym || !r?.entry || !r?.sl || !r?.tp1) return;
-
-    const url  = `wss://fstream.binance.com/ws/${r.sym.toLowerCase()}@miniTicker`;
-    const sock = new WebSocket(url);
-
-    // Her coin için durum objesi
-    const state = {
-      sock,
-      resolved: false,
-      tp1Hit: false,
-      tp2Hit: false,
-      // TS (time-stop) sayacı
-      tsTimer: null,
-      tsAt: Date.now() + (timeStopMin * 60 * 1000)
-    };
-    watchers.current[r.sym] = state;
-
-    // TS sayacı: süre dolarsa “TS” ile kapat
-    state.tsTimer = setInterval(() => {
-      if (state.resolved) return;
-      if (Date.now() >= state.tsAt) {
-        state.resolved = true;
-        finalize("TS");
-      }
-    }, 5000);
-
-    sock.onmessage = (ev) => {
-      if (state.resolved) return;
-      try {
-        const d = JSON.parse(ev.data);
-        const c = d?.c ? +d.c : null;
-        if (!c) return;
-
-        if (r.dir === "LONG") {
-          // TP’ler → trailing
-          if (!state.tp1Hit && c >= r.tp1) {
-            state.tp1Hit = true;
-            updateLockedPlan(r.sym, r.dir, { sl: r.entry });
-            markFloating(r.sym, "TP1", r);
+          // === ✅ TIME-STOP kontrolü ===
+          const locked = getLockedPlan(r.sym, r.dir);
+          if (locked?.ts && !state.resolved){
+            const ms = Date.now() - locked.ts;
+            if (ms >= timeStopMin*60*1000){
+              state.resolved = true;
+              finalize("TS");
+              return;
+            }
           }
-          if (!state.tp2Hit && c >= r.tp2) {
-            state.tp2Hit = true;
-            updateLockedPlan(r.sym, r.dir, { sl: r.tp1 });
-            markFloating(r.sym, "TP2", r);
+
+          // === TP/SL & trailing ===
+          const currentSL = getLockedPlan(r.sym, r.dir)?.sl ?? r.sl;
+          if (r.dir==="LONG"){
+            if (!state.tp1Hit && c>=r.tp1){ state.tp1Hit=true; updateLockedPlan(r.sym, r.dir, { sl: r.entry }); markFloating(r.sym,"TP1",r); }
+            if (!state.tp2Hit && c>=r.tp2){ state.tp2Hit=true; updateLockedPlan(r.sym, r.dir, { sl: r.tp1 }); markFloating(r.sym,"TP2",r); }
+            if (c<= currentSL){ state.resolved=true; finalize("SL"); }
+            else if (c>=r.tp3){ state.resolved=true; finalize("TP3"); }
+          }else{
+            if (!state.tp1Hit && c<=r.tp1){ state.tp1Hit=true; updateLockedPlan(r.sym, r.dir, { sl: r.entry }); markFloating(r.sym,"TP1",r); }
+            if (!state.tp2Hit && c<=r.tp2){ state.tp2Hit=true; updateLockedPlan(r.sym, r.dir, { sl: r.tp1 }); markFloating(r.sym,"TP2",r); }
+            if (c>= currentSL){ state.resolved=true; finalize("SL"); }
+            else if (c<=r.tp3){ state.resolved=true; finalize("TP3"); }
           }
-          // SL/TP3
-          const curSL = getLockedPlan(r.sym, r.dir)?.sl ?? r.sl;
-          if (c <= curSL) { state.resolved = true; finalize("SL"); }
-          else if (c >= r.tp3) { state.resolved = true; finalize("TP3"); }
-        } else {
-          // SHORT
-          if (!state.tp1Hit && c <= r.tp1) {
-            state.tp1Hit = true;
-            updateLockedPlan(r.sym, r.dir, { sl: r.entry });
-            markFloating(r.sym, "TP1", r);
-          }
-          if (!state.tp2Hit && c <= r.tp2) {
-            state.tp2Hit = true;
-            updateLockedPlan(r.sym, r.dir, { sl: r.tp1 });
-            markFloating(r.sym, "TP2", r);
-          }
-          const curSL = getLockedPlan(r.sym, r.dir)?.sl ?? r.sl;
-          if (c >= curSL) { state.resolved = true; finalize("SL"); }
-          else if (c <= r.tp3) { state.resolved = true; finalize("TP3"); }
+        }catch{}
+
+        function finalize(tag){
+          markResolved(r.sym, tag, r);
+          const success = tag!=="SL" && tag!=="TS";
+          const featKeys = [];
+          featKeys.push(`dir_${r.dir}`);
+          if (r.potSource) featKeys.push(`pot_${r.potSource}`);
+          aiLearnUpdate(featKeys, r.sym, success);
+          clearPlan(r.sym);
         }
-      } catch {}
-    };
-
-    // === Sonlandırma ve istatistik ===
-    function finalize(tag) {
-      // “stop” mantığı: hiç TP yoksa ve SL de yoksa TS sayılır; TS başarıya dahil edilmez
-      if (tag === "TS") {
-        markResolved(r.sym, "TS", r);   // ne TP ne SL
-      } else if (tag === "SL") {
-        // Eğer hiç TP vurmadıysa SL olarak say; TP vurduysa (ör. TP1 oldu sonra SL) yine SL olarak sayıyoruz
-        markResolved(r.sym, "SL", r);
-      } else {
-        // TP1/TP2/TP3
-        markResolved(r.sym, tag, r);
-      }
-
-      // Öğrenme güncelle
-      const success = tag !== "SL" && tag !== "TS"; // SL ve TS başarısız sayılmaz
-      const featKeys = [];
-      featKeys.push(`dir_${r.dir}`);
-      if (r.potSource) featKeys.push(`pot_${r.potSource}`);
-      aiLearnUpdate(featKeys, r.sym, success);
-
-      clearPlan(r.sym);
-
-      try { state.sock && state.sock.close(); } catch {}
-      if (state.tsTimer) { try { clearInterval(state.tsTimer); } catch {} }
-    }
-
-    function markFloating(sym, level, row) {
-      const hist = loadHist();
-      const idx = hist.findIndex(h => !h.resolved && h.sym === sym && Math.abs(Date.now() - h.ts) < 12 * 60 * 60 * 1000);
-      if (idx < 0) hist.push({ sym, ts: Date.now(), dir: row.dir, entry: row.entry, sl: row.sl, tp1: row.tp1, tp2: row.tp2, tp3: row.tp3, resolved: null, float: level });
-      else hist[idx].float = level;
-      saveHist(hist);
-    }
-
-    function markResolved(sym, tag, row) {
-      const hist = loadHist();
-      const idx = hist.findIndex(h => !h.resolved && h.sym === sym && Math.abs(Date.now() - h.ts) < 12 * 60 * 60 * 1000);
-      if (idx < 0) hist.push({ sym, ts: Date.now(), dir: row.dir, entry: row.entry, sl: row.sl, tp1: row.tp1, tp2: row.tp2, tp3: row.tp3, resolved: tag });
-      else hist[idx].resolved = tag;
-      saveHist(hist);
-    }
-  });
-
-  // Cleanup: bütün açık WS ve TS’leri kapat
-  return () => {
-    Object.values(watchers.current).forEach(w => {
-      try { w.sock && w.sock.close(); } catch {}
-      try { w.tsTimer && clearInterval(w.tsTimer); } catch {}
+      };
+      watchers.current[r.sym]=state;
     });
-    watchers.current = {};
-  };
-}, [rows, timeStopMin]);
 
+    function markFloating(sym,level,row){
+      const hist=loadHist();
+      const idx=hist.findIndex(h=>!h.resolved && h.sym===sym && Math.abs(Date.now()-h.ts)<12*60*60*1000);
+      if (idx<0) hist.push({sym,ts:Date.now(),dir:row.dir,entry:row.entry,sl:row.sl,tp1:row.tp1,tp2:row.tp2,tp3:row.tp3,resolved:null,float:level});
+      else hist[idx].float=level;
+      saveHist(hist);
+    }
+    function markResolved(sym,tag,row){
+      const hist=loadHist();
+      const idx=hist.findIndex(h=>!h.resolved && h.sym===sym && Math.abs(Date.now()-h.ts)<12*60*60*1000);
+      if (idx<0) hist.push({sym,ts:Date.now(),dir:row.dir,entry:row.entry,sl:row.sl,tp1:row.tp1,tp2:row.tp2,tp3:row.tp3,resolved:tag});
+      else hist[idx].resolved=tag;
+      saveHist(hist);
+    }
+    return ()=>{
+      Object.values(watchers.current).forEach(w=>{try{w.sock&&w.sock.close();}catch{}});
+      watchers.current={};
+    };
+  },[rows, timeStopMin]);
 
   if (!authOk) return <main style={{padding:16}}><div style={{opacity:.7}}>Yetki doğrulanıyor…</div></main>;
   if (!symbols.length) return <main style={{padding:16}}><div style={{opacity:.7}}>Semboller yükleniyor…</div></main>;
@@ -1014,11 +937,7 @@ useEffect(() => {
       {/* Üst mini dashboard */}
       <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:10,opacity:.88}}>
         <span style={chip}>7g Sinyal: <b>{dash.total}</b></span>
-        <span style={chip}>
-  Başarı: <b>{dash.rate}%</b>
-  (TP1:{dash.tp1} • TP2:{dash.tp2} • TP3:{dash.tp3} / SL:{dash.sl} • TS:{dash.ts})
-</span>
-
+        <span style={chip}>Başarı: <b>{dash.rate}%</b> (TP:{dash.tpHits} / SL:{dash.slHits})</span>
         <span style={chip}>Tarandı: <b>{symbols.length}</b> • Gösterilen: <b>{rows.length}</b> • Son: {lastRunAt? lastRunAt.toLocaleTimeString():"—"}</span>
         {btcd.value!=null && (
           <span style={{...chip, border:"1px solid #314466", background:"#142235", color:"#9bd0ff"}}>
@@ -1129,13 +1048,7 @@ useEffect(() => {
         <div style={cellBorder(0,9)}>Coin</div>
         <div style={cellBorder(1,9)}>Yön</div>
         <div style={cellBorder(2,9)}>Skor <span title="AI Boost dahil">ⓘ</span></div>
-        <div
-  style={cellBorder(3,9)}
-  title={`7g • TP1:${hs.tp1} • TP2:${hs.tp2} • TP3:${hs.tp3} / SL:${hs.sl} • TS:${hs.ts} • Açık:${hs.open} • Toplam:${hs.total}`}
->
-  {hs.rate ? `${hs.rate}%` : "—"}
-</div>
-
+        <div style={cellBorder(3,9)}>Başarı % (7g)</div>
         <div style={cellBorder(4,9)}>S/R (yakın)</div>
         <div style={cellBorder(5,9)}>Trend / ADX / Div</div>
         <div style={cellBorder(6,9)}>Entry • SL • TP1/2/3</div>
