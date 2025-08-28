@@ -249,41 +249,32 @@ function clearPlan(sym){
 /* ===== Geçmiş başarı (localStorage) ===== */
 const HIST_KEY = "kgz_sig_hist_v1";
 
-// SSR/ilk render güvenliği: window yoksa problemsiz dön
-const isBrowser = () => typeof window !== "undefined" && typeof localStorage !== "undefined";
-
 function loadHist(){
-  if (!isBrowser()) return [];
-  try{ return JSON.parse(localStorage.getItem(HIST_KEY)||"[]"); }catch{ return []; }
+  try{ return JSON.parse(localStorage.getItem(HIST_KEY) || "[]"); }
+  catch{ return []; }
 }
 function saveHist(arr){
-  if (!isBrowser()) return;
-  try{ localStorage.setItem(HIST_KEY, JSON.stringify(arr.slice(-400))); }catch{}
+  try{ localStorage.setItem(HIST_KEY, JSON.stringify(arr.slice(-400))); }
+  catch{}
 }
 
-/** 7 gün – tek sembol istatistiği */
+/** Sembol bazında 7g istatistik (yalnız KAPANAN işlemler) */
 function histStatsFor(sym, days=7){
   const now = Date.now(), windowMs = days*24*60*60*1000;
-  const arr = loadHist().filter(x => x.sym===sym && (now - x.ts) <= windowMs);
+  // Sadece kapanan (resolved dolu) kayıtlar dahil
+  const arr = loadHist().filter(x => x.sym===sym && (now - x.ts) <= windowMs && x.resolved);
 
-  let tp1=0,tp2=0,tp3=0,sl=0,ts=0,open=0;
-  for (const h of arr){
-    const tag = h.resolved;
-    if (!tag){ open++; continue; }           // hâlâ açık (TP/SL/TS gelmemiş)
-    if (tag==="SL") sl++;
-    else if (tag==="TS") ts++;               // Time-Stop
-    else if (tag==="TP1") tp1++;
-    else if (tag==="TP2") tp2++;
-    else if (tag==="TP3") tp3++;
-  }
-  const total  = arr.length;
-  const closed = tp1 + tp2 + tp3 + sl + ts;  // sadece kapananlar
-  const tpHits = tp1 + tp2 + tp3;
+  const tpHits = arr.filter(x => String(x.resolved).startsWith("TP")).length;
+  const slHits = arr.filter(x => x.resolved === "SL").length;
+  const tsHits = arr.filter(x => x.resolved === "TS").length;
+  const closed = arr.length;                          // TP/SL/TS toplamı
   const rate   = closed ? Math.round((tpHits/closed)*100) : 0;
-  return { total, closed, tp1, tp2, tp3, tpHits, sl, ts, open, rate };
+
+  // total = sadece kapananları göster (açık işlemler oranı bozmasın)
+  return { total: closed, tpHits, slHits, rate, tsHits };
 }
 
-/** 7 gün – genel özet (tüm semboller) */
+/** 7 gün GENEL özet (sembolden bağımsız) – sadece kapananlar */
 function histSummary(days=7){
   const now = Date.now(), windowMs = days*24*60*60*1000;
   const arr = loadHist().filter(x => (now - x.ts) <= windowMs);
@@ -291,18 +282,28 @@ function histSummary(days=7){
   let tp1=0,tp2=0,tp3=0,sl=0,ts=0,open=0;
   for (const h of arr){
     const tag = h.resolved;
-    if (!tag){ open++; continue; }           // açık işlemler
-    if (tag==="SL") sl++;
-    else if (tag==="TS") ts++;               // Time-Stop
-    else if (tag==="TP1") tp1++;
-    else if (tag==="TP2") tp2++;
-    else if (tag==="TP3") tp3++;
+    if (!tag){ open++; continue; }        // açık işlem
+    if (tag === "SL") sl++;
+    else if (tag === "TS") ts++;
+    else if (tag === "TP1") tp1++;
+    else if (tag === "TP2") tp2++;
+    else if (tag === "TP3") tp3++;
   }
-  const total  = arr.length;
-  const closed = tp1 + tp2 + tp3 + sl + ts;  // sadece kapananlar
+  const total  = tp1 + tp2 + tp3 + sl + ts;          // sadece kapananlar
+  const closed = total;
   const tpHits = tp1 + tp2 + tp3;
   const rate   = closed ? Math.round((tpHits/closed)*100) : 0;
+
   return { total, closed, tp1, tp2, tp3, tpHits, sl, ts, open, rate };
+}
+
+/** Güvenli sarmalayıcı – hata olursa boş özet döner, app çökmez */
+function safeHistSummary(days=7){
+  try{ return histSummary(days); }
+  catch(err){
+    console.error("[panel-sinyal] histSummary error:", err);
+    return { total:0, closed:0, tp1:0, tp2:0, tp3:0, tpHits:0, sl:0, ts:0, open:0, rate:0 };
+  }
 }
 
 /* ===== Öğrenen AI (yerel istatistik) ===== */
@@ -951,7 +952,7 @@ useEffect(() => {
   /* Grid + stiller */
   const gridCols = "1.05fr 0.65fr 0.9fr 0.9fr 1.15fr 1.6fr 2.25fr 1.35fr 1.2fr";
   const cellBorder = (i, total)=> ({ paddingRight:12, borderRight: i<total-1 ? "1px solid #1f2742" : "none" });
-  const dash = histSummary(7);
+  const dash = safeHistSummary(7);
 
   return (
     <main style={{minHeight:"100vh", background:"#0f1320", color:"#e6f0ff", padding:"16px 18px", paddingBottom:76}}>
