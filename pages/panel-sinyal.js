@@ -1014,7 +1014,11 @@ useEffect(() => {
       {/* Üst mini dashboard */}
       <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:10,opacity:.88}}>
         <span style={chip}>7g Sinyal: <b>{dash.total}</b></span>
-        <span style={chip}>Başarı: <b>{dash.rate}%</b> (TP:{dash.tpHits} / SL:{dash.slHits})</span>
+        <span style={chip}>
+  Başarı: <b>{dash.rate}%</b>
+  (TP1:{dash.tp1} • TP2:{dash.tp2} • TP3:{dash.tp3} / SL:{dash.sl} • TS:{dash.ts})
+</span>
+
         <span style={chip}>Tarandı: <b>{symbols.length}</b> • Gösterilen: <b>{rows.length}</b> • Son: {lastRunAt? lastRunAt.toLocaleTimeString():"—"}</span>
         {btcd.value!=null && (
           <span style={{...chip, border:"1px solid #314466", background:"#142235", color:"#9bd0ff"}}>
