@@ -768,121 +768,95 @@ export default function PanelSinyal(){
 /* WS: TP/SL izleme + trailing + başarı + ÖĞRENME güncellemesi */
 const watchers = useRef({});
 
-useEffect(()=>{
-  // Eski ws'leri kapat
-  Object.values(watchers.current).forEach(w=>{ try{ w.sock && w.sock.close(); }catch{} });
+useEffect(() => {
+  // Var olan WS’leri kapat
+  Object.values(watchers.current).forEach(w => { try { w.sock && w.sock.close(); } catch {} });
   watchers.current = {};
 
-  rows.forEach(r=>{
+  rows.forEach(r => {
     if (!r?.sym || !r?.entry || !r?.sl || !r?.tp1) return;
 
-    const url = `wss://fstream.binance.com/ws/${r.sym.toLowerCase()}@miniTicker`;
+    const url  = `wss://fstream.binance.com/ws/${r.sym.toLowerCase()}@miniTicker`;
     const sock = new WebSocket(url);
 
-    const state = { sock, resolved:false, tp1Hit:false, tp2Hit:false };
+    // Her coin için durum objesi
+    const state = {
+      sock,
+      resolved: false,
+      tp1Hit: false,
+      tp2Hit: false,
+      // TS (time-stop) sayacı
+      tsTimer: null,
+      tsAt: Date.now() + (timeStopMin * 60 * 1000)
+    };
     watchers.current[r.sym] = state;
 
-    // --- Time-Stop ---
-    const locked0 = getLockedPlan(r.sym, r.dir);
-    const startTs = locked0?.ts ?? Date.now();
-    const tsDeadlineMs = timeStopMin > 0 ? timeStopMin * 60 * 1000 : 0;
-
-    const checkTimeStop = ()=>{
-      if (state.resolved || !tsDeadlineMs) return;
-      const locked = getLockedPlan(r.sym, r.dir);
-      const ts0 = locked?.ts ?? startTs;
-      if (Date.now() - ts0 >= tsDeadlineMs){
-        state.resolved = true;
-        finalize("TS"); // TP yoksa STOP'a çevrilecek
-      }
-    };
-    const tsTimer = tsDeadlineMs ? setInterval(checkTimeStop, 5000) : null;
-    sock.onclose = ()=>{ if (tsTimer) clearInterval(tsTimer); };
-
-    sock.onmessage = (ev)=>{
+    // TS sayacı: süre dolarsa “TS” ile kapat
+    state.tsTimer = setInterval(() => {
       if (state.resolved) return;
-      try{
+      if (Date.now() >= state.tsAt) {
+        state.resolved = true;
+        finalize("TS");
+      }
+    }, 5000);
+
+    sock.onmessage = (ev) => {
+      if (state.resolved) return;
+      try {
         const d = JSON.parse(ev.data);
         const c = d?.c ? +d.c : null;
         if (!c) return;
 
-        const curLocked = getLockedPlan(r.sym, r.dir) || r;
-
-        if (r.dir === "LONG"){
-          if (!state.tp1Hit && c >= r.tp1){
+        if (r.dir === "LONG") {
+          // TP’ler → trailing
+          if (!state.tp1Hit && c >= r.tp1) {
             state.tp1Hit = true;
-            const newSL = Math.max(curLocked?.sl ?? r.sl, r.entry);
-            updateLockedPlan(r.sym, r.dir, { sl: newSL });
+            updateLockedPlan(r.sym, r.dir, { sl: r.entry });
             markFloating(r.sym, "TP1", r);
           }
-          if (!state.tp2Hit && c >= r.tp2){
+          if (!state.tp2Hit && c >= r.tp2) {
             state.tp2Hit = true;
-            const newSL = Math.max((getLockedPlan(r.sym, r.dir)?.sl ?? r.sl), r.tp1);
-            updateLockedPlan(r.sym, r.dir, { sl: newSL });
+            updateLockedPlan(r.sym, r.dir, { sl: r.tp1 });
             markFloating(r.sym, "TP2", r);
           }
-
-          const effSL = getLockedPlan(r.sym, r.dir)?.sl ?? r.sl;
-          if (c <= effSL){ state.resolved = true; finalize("SL"); }
-          else if (c >= r.tp3){ state.resolved = true; finalize("TP3"); }
-
-        } else { // SHORT
-          if (!state.tp1Hit && c <= r.tp1){
+          // SL/TP3
+          const curSL = getLockedPlan(r.sym, r.dir)?.sl ?? r.sl;
+          if (c <= curSL) { state.resolved = true; finalize("SL"); }
+          else if (c >= r.tp3) { state.resolved = true; finalize("TP3"); }
+        } else {
+          // SHORT
+          if (!state.tp1Hit && c <= r.tp1) {
             state.tp1Hit = true;
-            const newSL = Math.min(curLocked?.sl ?? r.sl, r.entry);
-            updateLockedPlan(r.sym, r.dir, { sl: newSL });
+            updateLockedPlan(r.sym, r.dir, { sl: r.entry });
             markFloating(r.sym, "TP1", r);
           }
-          if (!state.tp2Hit && c <= r.tp2){
+          if (!state.tp2Hit && c <= r.tp2) {
             state.tp2Hit = true;
-            const newSL = Math.min((getLockedPlan(r.sym, r.dir)?.sl ?? r.sl), r.tp1);
-            updateLockedPlan(r.sym, r.dir, { sl: newSL });
+            updateLockedPlan(r.sym, r.dir, { sl: r.tp1 });
             markFloating(r.sym, "TP2", r);
           }
-
-          const effSL = getLockedPlan(r.sym, r.dir)?.sl ?? r.sl;
-          if (c >= effSL){ state.resolved = true; finalize("SL"); }
-          else if (c <= r.tp3){ state.resolved = true; finalize("TP3"); }
+          const curSL = getLockedPlan(r.sym, r.dir)?.sl ?? r.sl;
+          if (c >= curSL) { state.resolved = true; finalize("SL"); }
+          else if (c <= r.tp3) { state.resolved = true; finalize("TP3"); }
         }
-      }catch{}
+      } catch {}
     };
 
-    // --- helpers ---
-    function markFloating(sym, level, row){
-      const hist = loadHist();
-      const idx = hist.findIndex(h=>!h.resolved && h.sym===sym && Math.abs(Date.now()-h.ts)<12*60*60*1000);
-      if (idx < 0){
-        hist.push({ sym, ts:Date.now(), dir:row.dir, entry:row.entry, sl:row.sl,
-          tp1:row.tp1, tp2:row.tp2, tp3:row.tp3, resolved:null, float:level });
+    // === Sonlandırma ve istatistik ===
+    function finalize(tag) {
+      // “stop” mantığı: hiç TP yoksa ve SL de yoksa TS sayılır; TS başarıya dahil edilmez
+      if (tag === "TS") {
+        markResolved(r.sym, "TS", r);   // ne TP ne SL
+      } else if (tag === "SL") {
+        // Eğer hiç TP vurmadıysa SL olarak say; TP vurduysa (ör. TP1 oldu sonra SL) yine SL olarak sayıyoruz
+        markResolved(r.sym, "SL", r);
       } else {
-        hist[idx].float = level;
-      }
-      saveHist(hist);
-    }
-
-    function markResolved(sym, tag, row){
-      const hist = loadHist();
-      const idx = hist.findIndex(h=>!h.resolved && h.sym===sym && Math.abs(Date.now()-h.ts)<12*60*60*1000);
-      if (idx < 0){
-        hist.push({ sym, ts:Date.now(), dir:row.dir, entry:row.entry, sl:row.sl,
-          tp1:row.tp1, tp2:row.tp2, tp3:row.tp3, resolved:tag });
-      } else {
-        hist[idx].resolved = tag;
-      }
-      saveHist(hist);
-    }
-
-    function finalize(tag){
-      // SL veya TS gelirse: önce TP upgrade kontrolü
-      if (tag === "SL" || tag === "TS"){
-        if (state.tp2Hit) tag = "TP2";
-        else if (state.tp1Hit) tag = "TP1";
-        else tag = "STOP"; // hiç TP yoksa STOP
+        // TP1/TP2/TP3
+        markResolved(r.sym, tag, r);
       }
 
-      markResolved(r.sym, tag, r);
-
-      const success = (tag === "TP1" || tag === "TP2" || tag === "TP3");
+      // Öğrenme güncelle
+      const success = tag !== "SL" && tag !== "TS"; // SL ve TS başarısız sayılmaz
       const featKeys = [];
       featKeys.push(`dir_${r.dir}`);
       if (r.potSource) featKeys.push(`pot_${r.potSource}`);
@@ -890,39 +864,37 @@ useEffect(()=>{
 
       clearPlan(r.sym);
 
-      try{ sock && sock.close(); }catch{}
-      if (tsTimer) clearInterval(tsTimer);
+      try { state.sock && state.sock.close(); } catch {}
+      if (state.tsTimer) { try { clearInterval(state.tsTimer); } catch {} }
+    }
+
+    function markFloating(sym, level, row) {
+      const hist = loadHist();
+      const idx = hist.findIndex(h => !h.resolved && h.sym === sym && Math.abs(Date.now() - h.ts) < 12 * 60 * 60 * 1000);
+      if (idx < 0) hist.push({ sym, ts: Date.now(), dir: row.dir, entry: row.entry, sl: row.sl, tp1: row.tp1, tp2: row.tp2, tp3: row.tp3, resolved: null, float: level });
+      else hist[idx].float = level;
+      saveHist(hist);
+    }
+
+    function markResolved(sym, tag, row) {
+      const hist = loadHist();
+      const idx = hist.findIndex(h => !h.resolved && h.sym === sym && Math.abs(Date.now() - h.ts) < 12 * 60 * 60 * 1000);
+      if (idx < 0) hist.push({ sym, ts: Date.now(), dir: row.dir, entry: row.entry, sl: row.sl, tp1: row.tp1, tp2: row.tp2, tp3: row.tp3, resolved: tag });
+      else hist[idx].resolved = tag;
+      saveHist(hist);
     }
   });
 
-  // Cleanup
-  return ()=>{
-    Object.values(watchers.current).forEach(w=>{ try{ w.sock && w.sock.close(); }catch{} });
+  // Cleanup: bütün açık WS ve TS’leri kapat
+  return () => {
+    Object.values(watchers.current).forEach(w => {
+      try { w.sock && w.sock.close(); } catch {}
+      try { w.tsTimer && clearInterval(w.tsTimer); } catch {}
+    });
     watchers.current = {};
   };
 }, [rows, timeStopMin]);
-      watchers.current[r.sym]=state;
-    });
 
-    function markFloating(sym,level,row){
-      const hist=loadHist();
-      const idx=hist.findIndex(h=>!h.resolved && h.sym===sym && Math.abs(Date.now()-h.ts)<12*60*60*1000);
-      if (idx<0) hist.push({sym,ts:Date.now(),dir:row.dir,entry:row.entry,sl:row.sl,tp1:row.tp1,tp2:row.tp2,tp3:row.tp3,resolved:null,float:level});
-      else hist[idx].float=level;
-      saveHist(hist);
-    }
-    function markResolved(sym,tag,row){
-      const hist=loadHist();
-      const idx=hist.findIndex(h=>!h.resolved && h.sym===sym && Math.abs(Date.now()-h.ts)<12*60*60*1000);
-      if (idx<0) hist.push({sym,ts:Date.now(),dir:row.dir,entry:row.entry,sl:row.sl,tp1:row.tp1,tp2:row.tp2,tp3:row.tp3,resolved:tag});
-      else hist[idx].resolved=tag;
-      saveHist(hist);
-    }
-    return ()=>{
-      Object.values(watchers.current).forEach(w=>{try{w.sock&&w.sock.close();}catch{}});
-      watchers.current={};
-    };
-  },[rows, timeStopMin]);
 
   if (!authOk) return <main style={{padding:16}}><div style={{opacity:.7}}>Yetki doğrulanıyor…</div></main>;
   if (!symbols.length) return <main style={{padding:16}}><div style={{opacity:.7}}>Semboller yükleniyor…</div></main>;
