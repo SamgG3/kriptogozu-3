@@ -257,9 +257,9 @@ function saveHist(arr){ try{ localStorage.setItem(HIST_KEY, JSON.stringify(arr.s
  * - sl: stop-loss ile kapananlar
  * - ts: time-stop ile kapananlar
  * - open: halen kapanmamış (resolved yok)
- * - total: pencere içindeki tüm kayıt sayısı (açıklar dahil)
+ * - total: pencere içindeki tüm kayıt (açıklar dahil)
  * - closed: kapanmış (TP/SL/TS) toplamı
- * - rate: kapanmışlar içinde TP yüzdesi (TS ve SL hariç)
+ * - rate: kapanmışlar içinde TP yüzdesi
  */
 function histStatsFor(sym, days=7){
   const now = Date.now();
