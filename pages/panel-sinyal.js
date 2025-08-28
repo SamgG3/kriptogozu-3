@@ -901,7 +901,6 @@ useEffect(()=>{
     watchers.current = {};
   };
 }, [rows, timeStopMin]);
-
       watchers.current[r.sym]=state;
     });
 
