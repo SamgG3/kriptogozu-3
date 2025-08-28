@@ -807,14 +807,16 @@ export default function PanelSinyal(){
           }
         }catch{}
 
-        function finalize(tag){
-          markResolved(r.sym, tag, r);
-          const success = tag!=="SL" && tag!=="TS";
-          const featKeys = [];
-          featKeys.push(`dir_${r.dir}`);
-          if (r.potSource) featKeys.push(`pot_${r.potSource}`);
-          aiLearnUpdate(featKeys, r.sym, success);
-          clearPlan(r.sym);
+function finalize(tag){
+  markResolved(r.sym, tag, r);
+  const success = tag!=="SL";
+  const featKeys = []; // ...
+  featKeys.push(`dir_${r.dir}`);
+  if (r.potSource) featKeys.push(`pot_${r.potSource}`);
+  aiLearnUpdate(featKeys, r.sym, success);
+  clearPlan(r.sym);
+}
+
         }
       };
       watchers.current[r.sym]=state;
