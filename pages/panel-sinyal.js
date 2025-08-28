@@ -248,63 +248,60 @@ function clearPlan(sym){
 
 /* ===== Geçmiş başarı (localStorage) ===== */
 const HIST_KEY = "kgz_sig_hist_v1";
-function loadHist(){ try{ return JSON.parse(localStorage.getItem(HIST_KEY)||"[]"); }catch{ return []; } }
-function saveHist(arr){ try{ localStorage.setItem(HIST_KEY, JSON.stringify(arr.slice(-400))); }catch{} }
 
-/**
- * Bir sembol için 7g varsayılan pencerede özet istatistikler.
- * - tp1/tp2/tp3: o katmanlara kadar ulaşan işlemler
- * - sl: stop-loss ile kapananlar
- * - ts: time-stop ile kapananlar
- * - open: halen kapanmamış (resolved yok)
- * - total: pencere içindeki tüm kayıt (açıklar dahil)
- * - closed: kapanmış (TP/SL/TS) toplamı
- * - rate: kapanmışlar içinde TP yüzdesi
- */
+// SSR/ilk render güvenliği: window yoksa problemsiz dön
+const isBrowser = () => typeof window !== "undefined" && typeof localStorage !== "undefined";
+
+function loadHist(){
+  if (!isBrowser()) return [];
+  try{ return JSON.parse(localStorage.getItem(HIST_KEY)||"[]"); }catch{ return []; }
+}
+function saveHist(arr){
+  if (!isBrowser()) return;
+  try{ localStorage.setItem(HIST_KEY, JSON.stringify(arr.slice(-400))); }catch{}
+}
+
+/** 7 gün – tek sembol istatistiği */
 function histStatsFor(sym, days=7){
-  const now = Date.now();
-  const windowMs = days*24*60*60*1000;
-  const arr = loadHist().filter(x => (now - x.ts) <= windowMs && x.sym === sym);
+  const now = Date.now(), windowMs = days*24*60*60*1000;
+  const arr = loadHist().filter(x => x.sym===sym && (now - x.ts) <= windowMs);
 
   let tp1=0,tp2=0,tp3=0,sl=0,ts=0,open=0;
   for (const h of arr){
     const tag = h.resolved;
-    if (!tag){ open++; continue; }
-    if (tag === "SL") sl++;
-    else if (tag === "TS") ts++;
-    else if (tag === "TP1") tp1++;
-    else if (tag === "TP2") tp2++;
-    else if (tag === "TP3") tp3++;
+    if (!tag){ open++; continue; }           // hâlâ açık (TP/SL/TS gelmemiş)
+    if (tag==="SL") sl++;
+    else if (tag==="TS") ts++;               // Time-Stop
+    else if (tag==="TP1") tp1++;
+    else if (tag==="TP2") tp2++;
+    else if (tag==="TP3") tp3++;
   }
   const total  = arr.length;
-  const closed = tp1 + tp2 + tp3 + sl + ts;
+  const closed = tp1 + tp2 + tp3 + sl + ts;  // sadece kapananlar
   const tpHits = tp1 + tp2 + tp3;
-  const rate   = closed ? Math.round((tpHits / closed) * 100) : 0;
-
+  const rate   = closed ? Math.round((tpHits/closed)*100) : 0;
   return { total, closed, tp1, tp2, tp3, tpHits, sl, ts, open, rate };
 }
 
-/** 7 gün genel özet (sembolden bağımsız) */
+/** 7 gün – genel özet (tüm semboller) */
 function histSummary(days=7){
-  const now = Date.now();
-  const windowMs = days*24*60*60*1000;
+  const now = Date.now(), windowMs = days*24*60*60*1000;
   const arr = loadHist().filter(x => (now - x.ts) <= windowMs);
 
   let tp1=0,tp2=0,tp3=0,sl=0,ts=0,open=0;
   for (const h of arr){
     const tag = h.resolved;
-    if (!tag){ open++; continue; }
-    if (tag === "SL") sl++;
-    else if (tag === "TS") ts++;
-    else if (tag === "TP1") tp1++;
-    else if (tag === "TP2") tp2++;
-    else if (tag === "TP3") tp3++;
+    if (!tag){ open++; continue; }           // açık işlemler
+    if (tag==="SL") sl++;
+    else if (tag==="TS") ts++;               // Time-Stop
+    else if (tag==="TP1") tp1++;
+    else if (tag==="TP2") tp2++;
+    else if (tag==="TP3") tp3++;
   }
   const total  = arr.length;
-  const closed = tp1 + tp2 + tp3 + sl + ts;
+  const closed = tp1 + tp2 + tp3 + sl + ts;  // sadece kapananlar
   const tpHits = tp1 + tp2 + tp3;
-  const rate   = closed ? Math.round((tpHits / closed) * 100) : 0;
-
+  const rate   = closed ? Math.round((tpHits/closed)*100) : 0;
   return { total, closed, tp1, tp2, tp3, tpHits, sl, ts, open, rate };
 }
 
