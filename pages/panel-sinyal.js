@@ -765,80 +765,136 @@ export default function PanelSinyal(){
     minQuote24h, adxMin, excludeHyperVol, hyperVolPct, maxRows, aiEnabled,
     rrMin, corrMin, gateByBTC, useBTCDom, btcdThresh
   ]);
-  /* WS: TP/SL izleme + trailing + başarı + ÖĞRENME + ✅ Time-Stop */
-  const watchers = useRef({});
-  useEffect(()=>{
-    Object.values(watchers.current).forEach(w=>{try{w.sock&&w.sock.close();}catch{}});
-    watchers.current={};
-    rows.forEach(r=>{
-      if (!r?.sym || !r?.entry || !r?.sl || !r?.tp1) return;
-      const url=`wss://fstream.binance.com/ws/${r.sym.toLowerCase()}@miniTicker`;
-      const sock=new WebSocket(url);
-      const state={sock, resolved:false, tp1Hit:false, tp2Hit:false};
-      sock.onmessage=(ev)=>{
-        if (state.resolved) return;
-        try{
-          const d=JSON.parse(ev.data);
-          const c=d?.c?+d.c:null; if(!c) return;
+/* WS: TP/SL izleme + trailing + başarı + ÖĞRENME güncellemesi */
+const watchers = useRef({});
 
-          // === ✅ TIME-STOP kontrolü ===
-          const locked = getLockedPlan(r.sym, r.dir);
-          if (locked?.ts && !state.resolved){
-            const ms = Date.now() - locked.ts;
-            if (ms >= timeStopMin*60*1000){
-              state.resolved = true;
-              finalize("TS");
-              return;
-            }
-          }
+useEffect(() => {
+  // Var olan WS’leri kapat
+  Object.values(watchers.current).forEach(w => { try { w.sock && w.sock.close(); } catch {} });
+  watchers.current = {};
 
-          // === TP/SL & trailing ===
-          const currentSL = getLockedPlan(r.sym, r.dir)?.sl ?? r.sl;
-          if (r.dir==="LONG"){
-            if (!state.tp1Hit && c>=r.tp1){ state.tp1Hit=true; updateLockedPlan(r.sym, r.dir, { sl: r.entry }); markFloating(r.sym,"TP1",r); }
-            if (!state.tp2Hit && c>=r.tp2){ state.tp2Hit=true; updateLockedPlan(r.sym, r.dir, { sl: r.tp1 }); markFloating(r.sym,"TP2",r); }
-            if (c<= currentSL){ state.resolved=true; finalize("SL"); }
-            else if (c>=r.tp3){ state.resolved=true; finalize("TP3"); }
-          }else{
-            if (!state.tp1Hit && c<=r.tp1){ state.tp1Hit=true; updateLockedPlan(r.sym, r.dir, { sl: r.entry }); markFloating(r.sym,"TP1",r); }
-            if (!state.tp2Hit && c<=r.tp2){ state.tp2Hit=true; updateLockedPlan(r.sym, r.dir, { sl: r.tp1 }); markFloating(r.sym,"TP2",r); }
-            if (c>= currentSL){ state.resolved=true; finalize("SL"); }
-            else if (c<=r.tp3){ state.resolved=true; finalize("TP3"); }
-          }
-        }catch{}
+  rows.forEach(r => {
+    if (!r?.sym || !r?.entry || !r?.sl || !r?.tp1) return;
 
-        function finalize(tag){
-          markResolved(r.sym, tag, r);
-          const success = tag!=="SL" && tag!=="TS";
-          const featKeys = [];
-          featKeys.push(`dir_${r.dir}`);
-          if (r.potSource) featKeys.push(`pot_${r.potSource}`);
-          aiLearnUpdate(featKeys, r.sym, success);
-          clearPlan(r.sym);
-        }
-      };
-      watchers.current[r.sym]=state;
-    });
+    const url  = `wss://fstream.binance.com/ws/${r.sym.toLowerCase()}@miniTicker`;
+    const sock = new WebSocket(url);
 
-    function markFloating(sym,level,row){
-      const hist=loadHist();
-      const idx=hist.findIndex(h=>!h.resolved && h.sym===sym && Math.abs(Date.now()-h.ts)<12*60*60*1000);
-      if (idx<0) hist.push({sym,ts:Date.now(),dir:row.dir,entry:row.entry,sl:row.sl,tp1:row.tp1,tp2:row.tp2,tp3:row.tp3,resolved:null,float:level});
-      else hist[idx].float=level;
-      saveHist(hist);
-    }
-    function markResolved(sym,tag,row){
-      const hist=loadHist();
-      const idx=hist.findIndex(h=>!h.resolved && h.sym===sym && Math.abs(Date.now()-h.ts)<12*60*60*1000);
-      if (idx<0) hist.push({sym,ts:Date.now(),dir:row.dir,entry:row.entry,sl:row.sl,tp1:row.tp1,tp2:row.tp2,tp3:row.tp3,resolved:tag});
-      else hist[idx].resolved=tag;
-      saveHist(hist);
-    }
-    return ()=>{
-      Object.values(watchers.current).forEach(w=>{try{w.sock&&w.sock.close();}catch{}});
-      watchers.current={};
+    // Her coin için durum objesi
+    const state = {
+      sock,
+      resolved: false,
+      tp1Hit: false,
+      tp2Hit: false,
+      // TS (time-stop) sayacı
+      tsTimer: null,
+      tsAt: Date.now() + (timeStopMin * 60 * 1000)
     };
-  },[rows, timeStopMin]);
+    watchers.current[r.sym] = state;
+
+    // TS sayacı: süre dolarsa “TS” ile kapat
+    state.tsTimer = setInterval(() => {
+      if (state.resolved) return;
+      if (Date.now() >= state.tsAt) {
+        state.resolved = true;
+        finalize("TS");
+      }
+    }, 5000);
+
+    sock.onmessage = (ev) => {
+      if (state.resolved) return;
+      try {
+        const d = JSON.parse(ev.data);
+        const c = d?.c ? +d.c : null;
+        if (!c) return;
+
+        if (r.dir === "LONG") {
+          // TP’ler → trailing
+          if (!state.tp1Hit && c >= r.tp1) {
+            state.tp1Hit = true;
+            updateLockedPlan(r.sym, r.dir, { sl: r.entry });
+            markFloating(r.sym, "TP1", r);
+          }
+          if (!state.tp2Hit && c >= r.tp2) {
+            state.tp2Hit = true;
+            updateLockedPlan(r.sym, r.dir, { sl: r.tp1 });
+            markFloating(r.sym, "TP2", r);
+          }
+          // SL/TP3
+          const curSL = getLockedPlan(r.sym, r.dir)?.sl ?? r.sl;
+          if (c <= curSL) { state.resolved = true; finalize("SL"); }
+          else if (c >= r.tp3) { state.resolved = true; finalize("TP3"); }
+        } else {
+          // SHORT
+          if (!state.tp1Hit && c <= r.tp1) {
+            state.tp1Hit = true;
+            updateLockedPlan(r.sym, r.dir, { sl: r.entry });
+            markFloating(r.sym, "TP1", r);
+          }
+          if (!state.tp2Hit && c <= r.tp2) {
+            state.tp2Hit = true;
+            updateLockedPlan(r.sym, r.dir, { sl: r.tp1 });
+            markFloating(r.sym, "TP2", r);
+          }
+          const curSL = getLockedPlan(r.sym, r.dir)?.sl ?? r.sl;
+          if (c >= curSL) { state.resolved = true; finalize("SL"); }
+          else if (c <= r.tp3) { state.resolved = true; finalize("TP3"); }
+        }
+      } catch {}
+    };
+
+    // === Sonlandırma ve istatistik ===
+    function finalize(tag) {
+      // “stop” mantığı: hiç TP yoksa ve SL de yoksa TS sayılır; TS başarıya dahil edilmez
+      if (tag === "TS") {
+        markResolved(r.sym, "TS", r);   // ne TP ne SL
+      } else if (tag === "SL") {
+        // Eğer hiç TP vurmadıysa SL olarak say; TP vurduysa (ör. TP1 oldu sonra SL) yine SL olarak sayıyoruz
+        markResolved(r.sym, "SL", r);
+      } else {
+        // TP1/TP2/TP3
+        markResolved(r.sym, tag, r);
+      }
+
+      // Öğrenme güncelle
+      const success = tag !== "SL" && tag !== "TS"; // SL ve TS başarısız sayılmaz
+      const featKeys = [];
+      featKeys.push(`dir_${r.dir}`);
+      if (r.potSource) featKeys.push(`pot_${r.potSource}`);
+      aiLearnUpdate(featKeys, r.sym, success);
+
+      clearPlan(r.sym);
+
+      try { state.sock && state.sock.close(); } catch {}
+      if (state.tsTimer) { try { clearInterval(state.tsTimer); } catch {} }
+    }
+
+    function markFloating(sym, level, row) {
+      const hist = loadHist();
+      const idx = hist.findIndex(h => !h.resolved && h.sym === sym && Math.abs(Date.now() - h.ts) < 12 * 60 * 60 * 1000);
+      if (idx < 0) hist.push({ sym, ts: Date.now(), dir: row.dir, entry: row.entry, sl: row.sl, tp1: row.tp1, tp2: row.tp2, tp3: row.tp3, resolved: null, float: level });
+      else hist[idx].float = level;
+      saveHist(hist);
+    }
+
+    function markResolved(sym, tag, row) {
+      const hist = loadHist();
+      const idx = hist.findIndex(h => !h.resolved && h.sym === sym && Math.abs(Date.now() - h.ts) < 12 * 60 * 60 * 1000);
+      if (idx < 0) hist.push({ sym, ts: Date.now(), dir: row.dir, entry: row.entry, sl: row.sl, tp1: row.tp1, tp2: row.tp2, tp3: row.tp3, resolved: tag });
+      else hist[idx].resolved = tag;
+      saveHist(hist);
+    }
+  });
+
+  // Cleanup: bütün açık WS ve TS’leri kapat
+  return () => {
+    Object.values(watchers.current).forEach(w => {
+      try { w.sock && w.sock.close(); } catch {}
+      try { w.tsTimer && clearInterval(w.tsTimer); } catch {}
+    });
+    watchers.current = {};
+  };
+}, [rows, timeStopMin]);
+
 
   if (!authOk) return <main style={{padding:16}}><div style={{opacity:.7}}>Yetki doğrulanıyor…</div></main>;
   if (!symbols.length) return <main style={{padding:16}}><div style={{opacity:.7}}>Semboller yükleniyor…</div></main>;
