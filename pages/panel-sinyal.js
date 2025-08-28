@@ -251,25 +251,46 @@ const HIST_KEY = "kgz_sig_hist_v1";
 function loadHist(){ try{ return JSON.parse(localStorage.getItem(HIST_KEY)||"[]"); }catch{ return []; } }
 function saveHist(arr){ try{ localStorage.setItem(HIST_KEY, JSON.stringify(arr.slice(-400))); }catch{} }
 function histStatsFor(sym, days=7){
-  const now=Date.now(), windowMs=days*24*60*60*1000;
-  const arr = loadHist().filter(x=>x.sym===sym && (now-x.ts)<=windowMs);
+  const now = Date.now(), windowMs = days*24*60*60*1000;
+  const arr = loadHist().filter(x => x.sym === sym && (now - x.ts) <= windowMs);
+
   const total = arr.length;
-  const tpHits = arr.filter(x=>x.resolved && x.resolved.startsWith("TP")).length;
-  // TS, SL gibi sayılır
-  const slHits = arr.filter(x=> x.resolved==="SL" || x.resolved==="TS").length;
-  const rate = total? Math.round((tpHits/total)*100) : 0;
-  return { total, tpHits, slHits, rate };
+  const tp1 = arr.filter(x => x.resolved === "TP1").length;
+  const tp2 = arr.filter(x => x.resolved === "TP2").length;
+  const tp3 = arr.filter(x => x.resolved === "TP3").length;
+  const tpAny = tp1 + tp2 + tp3;
+
+  const sl  = arr.filter(x => x.resolved === "SL").length;
+  const ts  = arr.filter(x => x.resolved === "TS").length;          // time-stop
+  const open= arr.filter(x => !x.resolved).length;
+
+  // Oran: TS’leri nötr say, yalnızca TP vs SL bazlı başarı
+  const denom = tpAny + sl;
+  const rate  = denom ? Math.round((tpAny/denom)*100) : 0;
+
+  return { total, tp1, tp2, tp3, tpAny, sl, ts, open, rate };
+
 }
 function histSummary(days=7){
-  const now=Date.now(), windowMs=days*24*60*60*1000;
-  const arr = loadHist().filter(x=> (now-x.ts)<=windowMs);
+  const now = Date.now(), windowMs = days*24*60*60*1000;
+  const arr = loadHist().filter(x => (now - x.ts) <= windowMs);
+
   const total = arr.length;
-  const tpHits = arr.filter(x=>x.resolved && x.resolved.startsWith("TP")).length;
-  // TS, SL gibi sayılır
-  const slHits = arr.filter(x=> x.resolved==="SL" || x.resolved==="TS").length;
-  const rate = total? Math.round((tpHits/total)*100) : 0;
-  return { total, tpHits, slHits, rate };
+  const tp1 = arr.filter(x => x.resolved === "TP1").length;
+  const tp2 = arr.filter(x => x.resolved === "TP2").length;
+  const tp3 = arr.filter(x => x.resolved === "TP3").length;
+  const tpAny = tp1 + tp2 + tp3;
+
+  const sl  = arr.filter(x => x.resolved === "SL").length;
+  const ts  = arr.filter(x => x.resolved === "TS").length;
+  const open= arr.filter(x => !x.resolved).length;
+
+  const denom = tpAny + sl;
+  const rate  = denom ? Math.round((tpAny/denom)*100) : 0;
+
+  return { total, tp1, tp2, tp3, tpAny, sl, ts, open, rate };
 }
+
 
 /* ===== Öğrenen AI (yerel istatistik) ===== */
 const LEARN_KEY = "kgz_sig_learn_v1";
@@ -993,7 +1014,11 @@ useEffect(() => {
       {/* Üst mini dashboard */}
       <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:10,opacity:.88}}>
         <span style={chip}>7g Sinyal: <b>{dash.total}</b></span>
-        <span style={chip}>Başarı: <b>{dash.rate}%</b> (TP:{dash.tpHits} / SL:{dash.slHits})</span>
+        <span style={chip}>
+  Başarı: <b>{dash.rate}%</b>
+  (TP1:{dash.tp1} • TP2:{dash.tp2} • TP3:{dash.tp3} / SL:{dash.sl} • TS:{dash.ts})
+</span>
+
         <span style={chip}>Tarandı: <b>{symbols.length}</b> • Gösterilen: <b>{rows.length}</b> • Son: {lastRunAt? lastRunAt.toLocaleTimeString():"—"}</span>
         {btcd.value!=null && (
           <span style={{...chip, border:"1px solid #314466", background:"#142235", color:"#9bd0ff"}}>
@@ -1104,7 +1129,13 @@ useEffect(() => {
         <div style={cellBorder(0,9)}>Coin</div>
         <div style={cellBorder(1,9)}>Yön</div>
         <div style={cellBorder(2,9)}>Skor <span title="AI Boost dahil">ⓘ</span></div>
-        <div style={cellBorder(3,9)}>Başarı % (7g)</div>
+        <div
+  style={cellBorder(3,9)}
+  title={`7g • TP1:${hs.tp1} • TP2:${hs.tp2} • TP3:${hs.tp3} / SL:${hs.sl} • TS:${hs.ts} • Açık:${hs.open} • Toplam:${hs.total}`}
+>
+  {hs.rate ? `${hs.rate}%` : "—"}
+</div>
+
         <div style={cellBorder(4,9)}>S/R (yakın)</div>
         <div style={cellBorder(5,9)}>Trend / ADX / Div</div>
         <div style={cellBorder(6,9)}>Entry • SL • TP1/2/3</div>
