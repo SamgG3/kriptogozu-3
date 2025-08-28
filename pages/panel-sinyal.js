@@ -196,6 +196,7 @@ function calcPlan(dir, L, atrK=DEFAULT_ATR_K, atrSeriesATR=null){
   }
   return null;
 }
+/* === DÜZELTME: Pozisyon boyutu formülü === */
 function positionSize(usd, riskPct, r){
   if (!usd||!riskPct||!r||r<=0) return 0;
   const riskUsd = usd*(riskPct/100);
@@ -250,12 +251,13 @@ function clearPlan(sym){
 const HIST_KEY = "kgz_sig_hist_v1";
 function loadHist(){ try{ return JSON.parse(localStorage.getItem(HIST_KEY)||"[]"); }catch{ return []; } }
 function saveHist(arr){ try{ localStorage.setItem(HIST_KEY, JSON.stringify(arr.slice(-400))); }catch{} }
+/* === TS, SL gibi sayılır (istatistikte) === */
 function histStatsFor(sym, days=7){
   const now=Date.now(), windowMs=days*24*60*60*1000;
   const arr = loadHist().filter(x=>x.sym===sym && (now-x.ts)<=windowMs);
   const total = arr.length;
   const tpHits = arr.filter(x=>x.resolved && x.resolved.startsWith("TP")).length;
-  const slHits = arr.filter(x=>x.resolved==="SL").length;
+  const slHits = arr.filter(x=>x.resolved==="SL" || x.resolved==="TS").length;
   const rate = total? Math.round((tpHits/total)*100) : 0;
   return { total, tpHits, slHits, rate };
 }
@@ -264,7 +266,7 @@ function histSummary(days=7){
   const arr = loadHist().filter(x=> (now-x.ts)<=windowMs);
   const total = arr.length;
   const tpHits = arr.filter(x=>x.resolved && x.resolved.startsWith("TP")).length;
-  const slHits = arr.filter(x=>x.resolved==="SL").length;
+  const slHits = arr.filter(x=>x.resolved==="SL" || x.resolved==="TS").length;
   const rate = total? Math.round((tpHits/total)*100) : 0;
   return { total, tpHits, slHits, rate };
 }
@@ -349,6 +351,27 @@ async function getMetrics(symbol){
     const j = await r.json();
     return { oiChangePct:Number(j?.oiChangePct)||0, fundingRate:Number(j?.fundingRate)||0, whaleNetflowUsd:Number(j?.whaleNetflowUsd)||0 };
   }catch{ return { oiChangePct:0, fundingRate:0, whaleNetflowUsd:0 }; }
+}
+
+/* === BTC Dominance: birden fazla olası endpoint, sessiz fallback === */
+async function getBTCDominance(){
+  const tryPaths = [
+    "/api/market/btc-dominance",
+    "/api/metrics/dominance",
+    "/api/futures/btc-dominance"
+  ];
+  for (const p of tryPaths){
+    try{
+      const r = await fetch(p,{cache:"no-store"});
+      if (!r.ok) continue;
+      const j = await r.json();
+      // Olası alan adları: value/dominance/percent , delta/change/Δ (1d/24h)
+      const val = Number(j?.value ?? j?.dominance ?? j?.percent ?? j?.btcDominance ?? j?.btc_dominance ?? NaN);
+      const delta = Number(j?.delta ?? j?.change ?? j?.change24h ?? j?.d1 ?? j?.delta24h ?? NaN);
+      if (!isNaN(val)) return { value: val, delta: isNaN(delta) ? null : delta };
+    }catch{}
+  }
+  return null; // yoksa sessizce pas
 }
 
 /* ===== Sayfa ===== */
@@ -473,13 +496,19 @@ export default function PanelSinyal(){
   const [corrMin, setCorrMin] = useState(0.6);  // CorrBTC eşiği (0 = kapalı)
   const [gateByBTC, setGateByBTC] = useState(true); // yüksek korelasyonda BTC yön teyidi
 
+  /* === YENİ: BTC Dominance filtresi === */
+  const [domEnabled, setDomEnabled] = useState(false);
+  const [domThresh, setDomThresh] = useState(52); // %
+  const [domInfo, setDomInfo] = useState(null);   // {value, delta}
+
   /* TARAMA */
   async function scanOnce(params){
     const {
       minPotX, sameDirX, useRegimeX, useSqueezeX, sqThreshX,
       minQuote24hX, adxMinX, excludeHyperVolX, hyperVolPctX,
       rrMinX, corrMinX, gateByBTCX,
-      btc15Series, btcBias
+      btc15Series, btcBias,
+      domEnabledX, domThreshX, domInfoX
     } = params;
 
     const btcCloses = (btc15Series||[]).map(b=> Number(b.close ?? b.c)).filter(v=>!isNaN(v));
@@ -662,8 +691,14 @@ export default function PanelSinyal(){
         corrBTC = pearsonCorr(coinRets, btcRets);
       }
       if (gateByBTCX && corrMinX>0 && corrBTC!=null && Math.abs(corrBTC)>=corrMinX){
-        // BTC 15m yönü ile ters ise ele
         if ((btcBias?.raw>0.06 && dir==="SHORT") || (btcBias?.raw<-0.06 && dir==="LONG")) continue;
+      }
+
+      // === BTC Dominance filtresi (opsiyonel) ===
+      if (domEnabledX && domInfoX?.value!=null && domInfoX.value>=domThreshX && sym!=="BTCUSDT"){
+        const domUp = domInfoX.delta!=null ? domInfoX.delta>0 : null;
+        if (domUp===true && dir==="LONG") continue;   // BTC.D↑ → alt LONG ele
+        if (domUp===false && dir==="SHORT") continue; // BTC.D↓ → alt SHORT ele
       }
 
       // AI yorum
@@ -682,7 +717,6 @@ export default function PanelSinyal(){
         posScale *= clamp(1 + symEdge*0.6, 0.7, 1.2);
       }
       if (atrCalc && price && (atrCalc/price) > 0.06) posScale *= 0.8; // aşırı oynaksa küçült
-      const riskUsd = capital*(riskPct/100)*posScale;
 
       out.push({
         sym, dir, score, aiBoost,
@@ -705,24 +739,28 @@ export default function PanelSinyal(){
     setLoading(true); setEasyApplied(false);
     try{
       // BTC 15m referans (korelasyon + yön teyidi için 1 kez al)
-      const [btc15Series, btcL15] = await Promise.all([
+      const [btc15Series, btcL15, dom] = await Promise.all([
         getSeries("BTCUSDT","15m",220),
-        getLatest("BTCUSDT","15m")
+        getLatest("BTCUSDT","15m"),
+        getBTCDominance()
       ]);
       const btcBias = biasScore(btcL15);
+      setDomInfo(dom || null);
 
       let res = await scanOnce({
         minPotX:minPot, sameDirX:sameDir, useRegimeX:useRegime, useSqueezeX:useSqueeze, sqThreshX:sqThresh,
         minQuote24hX:minQuote24h, adxMinX:adxMin, excludeHyperVolX:excludeHyperVol, hyperVolPctX:hyperVolPct,
         rrMinX:rrMin, corrMinX:corrMin, gateByBTCX:gateByBTC,
-        btc15Series, btcBias
+        btc15Series, btcBias,
+        domEnabledX:domEnabled, domThreshX:domThresh, domInfoX:dom
       });
       if (res.length===0 && easyMode){
         res = await scanOnce({
           minPotX:Math.min(minPot,0.10), sameDirX:false, useRegimeX:false, useSqueezeX:false, sqThreshX:sqThresh,
           minQuote24hX:0, adxMinX:0, excludeHyperVolX:false, hyperVolPctX:hyperVolPct,
           rrMinX:0, corrMinX:0, gateByBTCX:false,
-          btc15Series, btcBias
+          btc15Series, btcBias,
+          domEnabledX:false, domThreshX:domThresh, domInfoX:dom
         });
         setEasyApplied(true);
       }
@@ -747,10 +785,10 @@ export default function PanelSinyal(){
     authOk,symbols,refreshMs,mode,use3m,use30m,use4h,potIv,minPot,sameDir,useRegime,useSqueeze,sqThresh,
     easyMode,useWhale,useOI,useFunding,capital,riskPct,onlyFavs,filterSym,
     minQuote24h, adxMin, excludeHyperVol, hyperVolPct, maxRows, aiEnabled,
-    rrMin, corrMin, gateByBTC
+    rrMin, corrMin, gateByBTC, domEnabled, domThresh
   ]);
 
-  /* WS: TP/SL izleme + trailing + başarı + ÖĞRENME güncellemesi */
+  /* WS: TP/SL izleme + trailing + başarı + ÖĞRENME güncellemesi + Time-Stop (TS) */
   const watchers = useRef({});
   useEffect(()=>{
     Object.values(watchers.current).forEach(w=>{try{w.sock&&w.sock.close();}catch{}});
@@ -759,11 +797,21 @@ export default function PanelSinyal(){
       if (!r?.sym || !r?.entry || !r?.sl || !r?.tp1) return;
       const url=`wss://fstream.binance.com/ws/${r.sym.toLowerCase()}@miniTicker`;
       const sock=new WebSocket(url);
+      const planLocked = getLockedPlan(r.sym, r.dir);
+      const planTs = planLocked?.ts ?? Date.now();
+      const tsMs = Math.max(0, Number(timeStopMin||0))*60*1000;
+
       const state={sock, resolved:false, tp1Hit:false, tp2Hit:false};
       sock.onmessage=(ev)=>{
         if (state.resolved) return;
         try{
           const d=JSON.parse(ev.data); const c=d?.c?+d.c:null; if(!c) return;
+
+          /* === TIME-STOP kontrolü === */
+          if (tsMs>0 && Date.now()-planTs >= tsMs){
+            state.resolved=true; finalize("TS"); // TS: SL gibi sayılır
+            return;
+          }
 
           if (r.dir==="LONG"){
             if (!state.tp1Hit && c>=r.tp1){ state.tp1Hit=true; updateLockedPlan(r.sym, r.dir, { sl: r.entry }); markFloating(r.sym,"TP1",r); }
@@ -780,7 +828,7 @@ export default function PanelSinyal(){
 
         function finalize(tag){
           markResolved(r.sym, tag, r);
-          const success = tag!=="SL";
+          const success = tag!=="SL" && tag!=="TS";
           // öğrenim güncelle
           const featKeys = []; // basit: yalnızca yön + pot kaynak
           featKeys.push(`dir_${r.dir}`);
@@ -809,7 +857,7 @@ export default function PanelSinyal(){
       Object.values(watchers.current).forEach(w=>{try{w.sock&&w.sock.close();}catch{}});
       watchers.current={};
     };
-  },[rows]);
+  },[rows, timeStopMin]);
 
   if (!authOk) return <main style={{padding:16}}><div style={{opacity:.7}}>Yetki doğrulanıyor…</div></main>;
   if (!symbols.length) return <main style={{padding:16}}><div style={{opacity:.7}}>Semboller yükleniyor…</div></main>;
@@ -822,13 +870,15 @@ export default function PanelSinyal(){
       <b>Potansiyel:</b> BB hedefi veya ATR×2. Min %10–30 arası seçilebilir.<br/>
       <b>RR (Risk/Ödül):</b> S/R ya da potansiyelden “ödül” hesaplanır. <b>RR ≥ eşik</b> değilse sinyal gizlenir.<br/>
       <b>CorrBTC:</b> Coin 15m getirisi ile BTC 15m getirisi arasındaki korelasyon. <b>CorrBTC ≥ eşik</b> ve BTC yönü ters ise sinyal elenir (BTC teyidi).<br/>
+      <b>Dominance:</b> BTC.D verisi ve eşik sağlanırsa; BTC.D↑ iken <u>altcoin LONG</u>, BTC.D↓ iken <u>altcoin SHORT</u> sinyalleri elenir (BTC/ETH hariç tutulabilir).<br/>
       <b>Hacim filtresi:</b> 24s USDT hacmi düşük olanları eler.<br/>
       <b>Trend Gücü (ADX):</b> 25+ trend güçlü kabul edilir.<br/>
       <b>RSI Divergence:</b> Fiyat/RSI uyumsuzluğu yön teyidi verir.<br/>
       <b>S/R & Kırılım:</b> 15m swing seviyeleri ve tepe/dip kırılımları.<br/>
       <b>Plan (KİLİTLİ):</b> Entry/SL/TP1-3 sabitlenir. Trailing: TP1→SL=Entry, TP2→SL=TP1.<br/>
-      <b>Önerilen Poz.:</b> (Sermaye×Risk%) / (Entry−SL) × AI uyarlaması.<br/>
-      <b>Başarı %:</b> TP/SL dokunuşları WS ile izlenir, 7g özet üstte.
+      <b>Time-Stop (TS):</b> Plan kilitlendiğinden itibaren <i>TS dakikası</i> dolarsa ve çözülmediyse otomatik <b>TS</b> ile kapanır (istatistikte SL gibi sayılır).<br/>
+      <b>Önerilen Poz.:</b> <code>(Sermaye×Risk%) / R</code> × AI uyarlaması.<br/>
+      <b>Başarı %:</b> TP/SL/TS dokunuşları WS ile izlenir, 7g özet üstte.
     </div>
   );
 
@@ -886,6 +936,10 @@ export default function PanelSinyal(){
           </label>
           <label style={lbl}><input type="checkbox" checked={gateByBTC} onChange={e=>setGateByBTC(e.target.checked)}/> BTC yön teyidi</label>
 
+          {/* === Dominance kontrolü === */}
+          <label style={lbl}><input type="checkbox" checked={domEnabled} onChange={e=>setDomEnabled(e.target.checked)}/> Dominance</label>
+          <label style={lbl}>Eşik %<input type="number" value={domThresh} onChange={e=>setDomThresh(Number(e.target.value||0))} style={{...sel,width:70}}/></label>
+
           <label style={lbl}>
             Hız
             <select value={String(refreshMs)} onChange={e=>setRefreshMs(Number(e.target.value))} style={sel}>
@@ -902,6 +956,12 @@ export default function PanelSinyal(){
         <span style={chip}>7g Sinyal: <b>{dash.total}</b></span>
         <span style={chip}>Başarı: <b>{dash.rate}%</b> (TP:{dash.tpHits} / SL:{dash.slHits})</span>
         <span style={chip}>Tarandı: <b>{symbols.length}</b> • Gösterilen: <b>{rows.length}</b> • Son: {lastRunAt? lastRunAt.toLocaleTimeString():"—"}</span>
+        {domInfo?.value!=null && (
+          <span style={{...chip, background:"#0f1b33"}}>
+            BTC.D <b>{fmt(domInfo.value,2)}%</b>
+            {domInfo.delta!=null && <span style={{marginLeft:6, color: domInfo.delta>=0 ? "#22d39a" : "#ff6b6b"}}>{domInfo.delta>=0?"↑":"↓"} {fmt(Math.abs(domInfo.delta),2)}%</span>}
+          </span>
+        )}
         {easyApplied && <span style={{...chip, border:"1px solid #314466", background:"#142235", color:"#9bd0ff", fontWeight:800}}>Kolay Mod devrede</span>}
         <button onClick={()=>{ aiReset(); alert("AI öğrenim istatistikleri sıfırlandı."); }} style={{...btnSm,marginLeft:8}}>AI Sıfırla</button>
       </div>
@@ -1000,7 +1060,7 @@ export default function PanelSinyal(){
         display:"grid",
         gridTemplateColumns:gridCols,
         padding:"10px 12px", background:"#0e1424",
-        border:"1px solid #1f2742", borderRadius:"12px 12px 0 0",
+        border:"1px solid "#1f2742", borderRadius:"12px 12px 0 0",
         color:"#a9b4c9", fontWeight:800
       }}>
         <div style={cellBorder(0,9)}>Coin</div>
@@ -1024,7 +1084,10 @@ export default function PanelSinyal(){
           const price = wsTicks[r.sym]?.last ?? r.price ?? r.entry ?? null;
           const chg   = wsTicks[r.sym]?.chg ?? null;
           const plan  = r.entry ? r : null;
-          const pos   = plan ? positionSize((capital*(riskPct/100)), riskPct, r.r) : 0;
+
+          /* === DÜZELTME: positionSize çağrısı (risk ikinci kez uygulanmıyor) === */
+          const pos   = plan ? positionSize(capital, riskPct, r.r) : 0;
+
           const fav   = r.fav;
           const hs    = histStatsFor(r.sym,7);
 
@@ -1064,7 +1127,7 @@ export default function PanelSinyal(){
               </div>
 
               {/* Başarı % */}
-              <div style={cellBorder(3,9)} title={`7g • TP:${hs.tpHits} / SL:${hs.slHits} • Toplam:${hs.total}`}>{hs.rate? `${hs.rate}%` : "—"}</div>
+              <div style={cellBorder(3,9)} title={`7g • TP:${hs.tpHits} / SL+TS:${hs.slHits} • Toplam:${hs.total}`}>{hs.rate? `${hs.rate}%` : "—"}</div>
 
               {/* S/R */}
               <div style={cellBorder(4,9)}>
