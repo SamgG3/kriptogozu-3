@@ -279,12 +279,35 @@ function histStatsFor(sym, days=7){
   const total  = arr.length;
   const closed = tp1 + tp2 + tp3 + sl + ts;
   const tpHits = tp1 + tp2 + tp3;
-
-  // Kapanmışlar içindeki TP yüzdesi (TS ve SL’i başarısız sayar)
-  const rate = closed ? Math.round((tpHits / closed) * 100) : 0;
+  const rate   = closed ? Math.round((tpHits / closed) * 100) : 0;
 
   return { total, closed, tp1, tp2, tp3, tpHits, sl, ts, open, rate };
 }
+
+/** 7 gün genel özet (sembolden bağımsız) */
+function histSummary(days=7){
+  const now = Date.now();
+  const windowMs = days*24*60*60*1000;
+  const arr = loadHist().filter(x => (now - x.ts) <= windowMs);
+
+  let tp1=0,tp2=0,tp3=0,sl=0,ts=0,open=0;
+  for (const h of arr){
+    const tag = h.resolved;
+    if (!tag){ open++; continue; }
+    if (tag === "SL") sl++;
+    else if (tag === "TS") ts++;
+    else if (tag === "TP1") tp1++;
+    else if (tag === "TP2") tp2++;
+    else if (tag === "TP3") tp3++;
+  }
+  const total  = arr.length;
+  const closed = tp1 + tp2 + tp3 + sl + ts;
+  const tpHits = tp1 + tp2 + tp3;
+  const rate   = closed ? Math.round((tpHits / closed) * 100) : 0;
+
+  return { total, closed, tp1, tp2, tp3, tpHits, sl, ts, open, rate };
+}
+
 
 /** 7 gün genel özet (sembolden bağımsız) */
 function histSummary(days=7){
