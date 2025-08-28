@@ -248,63 +248,49 @@ function clearPlan(sym){
 
 /* ===== Geçmiş başarı (localStorage) ===== */
 const HIST_KEY = "kgz_sig_hist_v1";
-
-function loadHist(){
-  try{ return JSON.parse(localStorage.getItem(HIST_KEY) || "[]"); }
-  catch{ return []; }
-}
-function saveHist(arr){
-  try{ localStorage.setItem(HIST_KEY, JSON.stringify(arr.slice(-400))); }
-  catch{}
-}
-
-/** Sembol bazında 7g istatistik (yalnız KAPANAN işlemler) */
+function loadHist(){ try{ return JSON.parse(localStorage.getItem(HIST_KEY)||"[]"); }catch{ return []; } }
+function saveHist(arr){ try{ localStorage.setItem(HIST_KEY, JSON.stringify(arr.slice(-400))); }catch{} }
 function histStatsFor(sym, days=7){
   const now = Date.now(), windowMs = days*24*60*60*1000;
-  // Sadece kapanan (resolved dolu) kayıtlar dahil
-  const arr = loadHist().filter(x => x.sym===sym && (now - x.ts) <= windowMs && x.resolved);
+  const arr = loadHist().filter(x => x.sym === sym && (now - x.ts) <= windowMs);
 
-  const tpHits = arr.filter(x => String(x.resolved).startsWith("TP")).length;
-  const slHits = arr.filter(x => x.resolved === "SL").length;
-  const tsHits = arr.filter(x => x.resolved === "TS").length;
-  const closed = arr.length;                          // TP/SL/TS toplamı
-  const rate   = closed ? Math.round((tpHits/closed)*100) : 0;
+  const total = arr.length;
+  const tp1 = arr.filter(x => x.resolved === "TP1").length;
+  const tp2 = arr.filter(x => x.resolved === "TP2").length;
+  const tp3 = arr.filter(x => x.resolved === "TP3").length;
+  const tpAny = tp1 + tp2 + tp3;
 
-  // total = sadece kapananları göster (açık işlemler oranı bozmasın)
-  return { total: closed, tpHits, slHits, rate, tsHits };
+  const sl  = arr.filter(x => x.resolved === "SL").length;
+  const ts  = arr.filter(x => x.resolved === "TS").length;          // time-stop
+  const open= arr.filter(x => !x.resolved).length;
+
+  // Oran: TS’leri nötr say, yalnızca TP vs SL bazlı başarı
+  const denom = tpAny + sl;
+  const rate  = denom ? Math.round((tpAny/denom)*100) : 0;
+
+  return { total, tp1, tp2, tp3, tpAny, sl, ts, open, rate };
+
 }
-
-/** 7 gün GENEL özet (sembolden bağımsız) – sadece kapananlar */
 function histSummary(days=7){
   const now = Date.now(), windowMs = days*24*60*60*1000;
   const arr = loadHist().filter(x => (now - x.ts) <= windowMs);
 
-  let tp1=0,tp2=0,tp3=0,sl=0,ts=0,open=0;
-  for (const h of arr){
-    const tag = h.resolved;
-    if (!tag){ open++; continue; }        // açık işlem
-    if (tag === "SL") sl++;
-    else if (tag === "TS") ts++;
-    else if (tag === "TP1") tp1++;
-    else if (tag === "TP2") tp2++;
-    else if (tag === "TP3") tp3++;
-  }
-  const total  = tp1 + tp2 + tp3 + sl + ts;          // sadece kapananlar
-  const closed = total;
-  const tpHits = tp1 + tp2 + tp3;
-  const rate   = closed ? Math.round((tpHits/closed)*100) : 0;
+  const total = arr.length;
+  const tp1 = arr.filter(x => x.resolved === "TP1").length;
+  const tp2 = arr.filter(x => x.resolved === "TP2").length;
+  const tp3 = arr.filter(x => x.resolved === "TP3").length;
+  const tpAny = tp1 + tp2 + tp3;
 
-  return { total, closed, tp1, tp2, tp3, tpHits, sl, ts, open, rate };
+  const sl  = arr.filter(x => x.resolved === "SL").length;
+  const ts  = arr.filter(x => x.resolved === "TS").length;
+  const open= arr.filter(x => !x.resolved).length;
+
+  const denom = tpAny + sl;
+  const rate  = denom ? Math.round((tpAny/denom)*100) : 0;
+
+  return { total, tp1, tp2, tp3, tpAny, sl, ts, open, rate };
 }
 
-/** Güvenli sarmalayıcı – hata olursa boş özet döner, app çökmez */
-function safeHistSummary(days=7){
-  try{ return histSummary(days); }
-  catch(err){
-    console.error("[panel-sinyal] histSummary error:", err);
-    return { total:0, closed:0, tp1:0, tp2:0, tp3:0, tpHits:0, sl:0, ts:0, open:0, rate:0 };
-  }
-}
 
 /* ===== Öğrenen AI (yerel istatistik) ===== */
 const LEARN_KEY = "kgz_sig_learn_v1";
@@ -952,7 +938,7 @@ useEffect(() => {
   /* Grid + stiller */
   const gridCols = "1.05fr 0.65fr 0.9fr 0.9fr 1.15fr 1.6fr 2.25fr 1.35fr 1.2fr";
   const cellBorder = (i, total)=> ({ paddingRight:12, borderRight: i<total-1 ? "1px solid #1f2742" : "none" });
-  const dash = safeHistSummary(7);
+  const dash = histSummary(7);
 
   return (
     <main style={{minHeight:"100vh", background:"#0f1320", color:"#e6f0ff", padding:"16px 18px", paddingBottom:76}}>
@@ -1341,4 +1327,3 @@ const btnSm= { padding:"6px 10px", background:"#1a1f2e", border:"1px solid #2a2f
 const btnPrimary = { padding:"8px 12px", background:"#1a1f2e", border:"1px solid #2a2f45", borderRadius:10, color:"#fff", fontWeight:800, cursor:"pointer" };
 const chip = { padding:"6px 10px", border:"1px solid #2a2f45", borderRadius:8, background:"#101a30" };
 const helpBox = { marginTop:10, border:"1px solid #22324f", background:"#0f152a", borderRadius:12, padding:"10px 12px", lineHeight:1.6 };
-
