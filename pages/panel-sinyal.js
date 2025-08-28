@@ -902,7 +902,6 @@ useEffect(()=>{
   };
 }, [rows, timeStopMin]);
 
-      };
       watchers.current[r.sym]=state;
     });
 
