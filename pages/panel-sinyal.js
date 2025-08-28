@@ -272,15 +272,25 @@ function histStatsFor(sym, days=7){
 
 }
 function histSummary(days=7){
-  const now=Date.now(), windowMs=days*24*60*60*1000;
-  const arr = loadHist().filter(x=> (now-x.ts)<=windowMs);
+  const now = Date.now(), windowMs = days*24*60*60*1000;
+  const arr = loadHist().filter(x => (now - x.ts) <= windowMs);
+
   const total = arr.length;
-  const tpHits = arr.filter(x=>x.resolved && x.resolved.startsWith("TP")).length;
-  // TS, SL gibi sayılır
-  const slHits = arr.filter(x=> x.resolved==="SL" || x.resolved==="TS").length;
-  const rate = total? Math.round((tpHits/total)*100) : 0;
-  return { total, tpHits, slHits, rate };
+  const tp1 = arr.filter(x => x.resolved === "TP1").length;
+  const tp2 = arr.filter(x => x.resolved === "TP2").length;
+  const tp3 = arr.filter(x => x.resolved === "TP3").length;
+  const tpAny = tp1 + tp2 + tp3;
+
+  const sl  = arr.filter(x => x.resolved === "SL").length;
+  const ts  = arr.filter(x => x.resolved === "TS").length;
+  const open= arr.filter(x => !x.resolved).length;
+
+  const denom = tpAny + sl;
+  const rate  = denom ? Math.round((tpAny/denom)*100) : 0;
+
+  return { total, tp1, tp2, tp3, tpAny, sl, ts, open, rate };
 }
+
 
 /* ===== Öğrenen AI (yerel istatistik) ===== */
 const LEARN_KEY = "kgz_sig_learn_v1";
