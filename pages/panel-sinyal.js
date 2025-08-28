@@ -797,7 +797,6 @@ useEffect(()=>{
       }
     };
     const tsTimer = tsDeadlineMs ? setInterval(checkTimeStop, 5000) : null;
-
     sock.onclose = ()=>{ if (tsTimer) clearInterval(tsTimer); };
 
     sock.onmessage = (ev)=>{
@@ -827,7 +826,7 @@ useEffect(()=>{
           if (c <= effSL){ state.resolved = true; finalize("SL"); }
           else if (c >= r.tp3){ state.resolved = true; finalize("TP3"); }
 
-        } else {
+        } else { // SHORT
           if (!state.tp1Hit && c <= r.tp1){
             state.tp1Hit = true;
             const newSL = Math.min(curLocked?.sl ?? r.sl, r.entry);
@@ -874,7 +873,7 @@ useEffect(()=>{
     }
 
     function finalize(tag){
-      // SL veya TS geldiğinde: önce TP upgrade kontrolü
+      // SL veya TS gelirse: önce TP upgrade kontrolü
       if (tag === "SL" || tag === "TS"){
         if (state.tp2Hit) tag = "TP2";
         else if (state.tp1Hit) tag = "TP1";
@@ -903,9 +902,6 @@ useEffect(()=>{
   };
 }, [rows, timeStopMin]);
 
-
-
-        }
       };
       watchers.current[r.sym]=state;
     });
