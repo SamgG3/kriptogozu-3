@@ -1017,8 +1017,6 @@ useEffect(() => {
 <span style={chip}>
   Başarı: <b>{dash.rate}%</b> (TP:{dash.tpHits} / SL:{dash.sl ?? dash.slHits ?? 0}{dash.ts != null && ` / TS:${dash.ts}`})
 </span>
->
-
         <span style={chip}>Tarandı: <b>{symbols.length}</b> • Gösterilen: <b>{rows.length}</b> • Son: {lastRunAt? lastRunAt.toLocaleTimeString():"—"}</span>
         {btcd.value!=null && (
           <span style={{...chip, border:"1px solid #314466", background:"#142235", color:"#9bd0ff"}}>
