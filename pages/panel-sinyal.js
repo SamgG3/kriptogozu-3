@@ -385,42 +385,51 @@ async function getBTCDominance(){
     if (!isNaN(value) && !isNaN(chgPct)) return { value, chgPct };
   }catch{}
   return { value:null, chgPct:null };
-  // === Risk yardımcıları ===
+  
+// === Risk yardımcıları (safe) ===
+// Not: Hook'lara dışarıdan erişmiyoruz. Cooldown state'i parametreyle alınır.
+
 function makeCtxFromRow(row){
-  const ctx = {
+  return {
     sym: row.sym || row.symbol || row.ticker,
     tf: row.tf || row.timeframe || "5m",
-    dir: row.dir || row.direction,
+    dir: row.dir || row.direction,               
     price: row.price ?? row.last ?? row.close,
     ema20: row.ema20, ema50: row.ema50, ema200: row.ema200,
     bbUpper: row.bbUpper, bbLower: row.bbLower,
     atr14: row.atr14, rsi14: row.rsi14, rsiSlope3: row.rsiSlope3,
     hourTR: (new Date()).getHours()
   };
-  return ctx;
 }
 
-function isCooling(sym, dir){
+// cooldown yardımcıları: state'i parametreyle alır
+function isCooling(cooldownUntil, sym, dir){
   const key = `${sym}-${dir}`;
-  const u = cooldownUntil[key] || 0;
+  const u = (cooldownUntil && cooldownUntil[key]) || 0;
   return Date.now() < u;
 }
-function armCooldown(sym, dir, mins){
+function armCooldown(setCooldownUntil, sym, dir, mins){
   const key = `${sym}-${dir}`;
-  setCooldownUntil(prev => ({...prev, [key]: Date.now() + mins*60*1000}));
+  if (typeof setCooldownUntil === "function"){
+    setCooldownUntil(prev => ({...prev, [key]: Date.now() + mins*60*1000}));
+  }
 }
 
-function guardedSignal(row){
+// guardedSignal: cooldownUntil'i DIŞARIDAN alır → hook bağı yok
+function guardedSignal(row, cooldownUntil){
   const ctx = makeCtxFromRow(row);
   if(!ctx || !Number.isFinite(ctx.price) || !Number.isFinite(ctx.atr14)) return { blocked:"no-data" };
   if(!ctx.dir) return { blocked:"no-dir" };
-  if(isCooling(ctx.sym, ctx.dir)) return { blocked:"cooldown" };
+  if(isCooling(cooldownUntil, ctx.sym, ctx.dir)) return { blocked:"cooldown" };
+
+  // trend/vol/RSI filtreleri risk-tools dosyasında
   if(!entryAllowed(ctx)) return { blocked:"filters" };
 
   const setup = stopsAndTargets({ dir: ctx.dir, entry: ctx.price, atr14: ctx.atr14, tf: ctx.tf });
   return { ctx, setup, blocked:null };
 }
 
+// Görsel mini bileşenler (stateless)
 function RiskBadge({blocked}) {
   if(!blocked) return null;
   const txt = blocked==="cooldown" ? "Cooldown aktif"
@@ -434,7 +443,6 @@ function RiskBadge({blocked}) {
     </span>
   );
 }
-
 function SLTPPreview({setup}) {
   if(!setup) return null;
   const { sl,tp1,tp2,tp3 } = setup;
@@ -445,6 +453,7 @@ function SLTPPreview({setup}) {
     </div>
   );
 }
+
 /* ===== Sayfa ===== */
 export default function PanelSinyal(){
   const router = useRouter();
