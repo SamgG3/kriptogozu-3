@@ -1,5 +1,7 @@
 // pages/panel-sinyal.js
 import React, { useEffect, useMemo, useRef, useState } from "react";
+// risk helper (tek satır)
+import { entryAllowed, stopsAndTargets, nextTrailSL } from "../lib/risk-tools";
 import Link from "next/link";
 import { useRouter } from "next/router";
 
@@ -383,6 +385,65 @@ async function getBTCDominance(){
     if (!isNaN(value) && !isNaN(chgPct)) return { value, chgPct };
   }catch{}
   return { value:null, chgPct:null };
+  // === Risk yardımcıları ===
+function makeCtxFromRow(row){
+  const ctx = {
+    sym: row.sym || row.symbol || row.ticker,
+    tf: row.tf || row.timeframe || "5m",
+    dir: row.dir || row.direction,
+    price: row.price ?? row.last ?? row.close,
+    ema20: row.ema20, ema50: row.ema50, ema200: row.ema200,
+    bbUpper: row.bbUpper, bbLower: row.bbLower,
+    atr14: row.atr14, rsi14: row.rsi14, rsiSlope3: row.rsiSlope3,
+    hourTR: (new Date()).getHours()
+  };
+  return ctx;
+}
+
+function isCooling(sym, dir){
+  const key = `${sym}-${dir}`;
+  const u = cooldownUntil[key] || 0;
+  return Date.now() < u;
+}
+function armCooldown(sym, dir, mins){
+  const key = `${sym}-${dir}`;
+  setCooldownUntil(prev => ({...prev, [key]: Date.now() + mins*60*1000}));
+}
+
+function guardedSignal(row){
+  const ctx = makeCtxFromRow(row);
+  if(!ctx || !Number.isFinite(ctx.price) || !Number.isFinite(ctx.atr14)) return { blocked:"no-data" };
+  if(!ctx.dir) return { blocked:"no-dir" };
+  if(isCooling(ctx.sym, ctx.dir)) return { blocked:"cooldown" };
+  if(!entryAllowed(ctx)) return { blocked:"filters" };
+
+  const setup = stopsAndTargets({ dir: ctx.dir, entry: ctx.price, atr14: ctx.atr14, tf: ctx.tf });
+  return { ctx, setup, blocked:null };
+}
+
+function RiskBadge({blocked}) {
+  if(!blocked) return null;
+  const txt = blocked==="cooldown" ? "Cooldown aktif"
+            : blocked==="filters"  ? "Sıkışık / Trend dışı"
+            : blocked==="no-data"  ? "Veri eksik"
+            : blocked==="no-dir"   ? "Yön yok"
+            : blocked;
+  return (
+    <span style={{padding:"2px 6px", border:"1px solid #555", borderRadius:6, fontSize:12}}>
+      {txt}
+    </span>
+  );
+}
+
+function SLTPPreview({setup}) {
+  if(!setup) return null;
+  const { sl,tp1,tp2,tp3 } = setup;
+  const f = (v)=> (Number.isFinite(v) ? v.toFixed(4) : "—");
+  return (
+    <div style={{fontSize:12, opacity:0.9}}>
+      SL: {f(sl)} · TP1: {f(tp1)} · TP2: {f(tp2)} · TP3: {f(tp3)}
+    </div>
+  );
 }
 /* ===== Sayfa ===== */
 export default function PanelSinyal(){
@@ -462,6 +523,12 @@ export default function PanelSinyal(){
   const [useWhale,setUseWhale] = useState(true);
   const [useOI,setUseOI] = useState(true);
   const [useFunding,setUseFunding] = useState(true);
+  const [riskCfg] = useState({
+  cooldownMin: 20,   // SL sonrası bekleme (dk)
+  showBadges: true   // Chop/Cooldown rozetlerini göster
+});
+
+const [cooldownUntil, setCooldownUntil] = useState({}); // { "BTCUSDT-long": ts, ... }
 
   // BTC Dominance (opsiyonel)
   const [useBTCDom, setUseBTCDom] = useState(false);
