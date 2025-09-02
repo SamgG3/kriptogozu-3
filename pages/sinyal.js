@@ -13,14 +13,10 @@ export default function Sinyal() {
         const res = await fetch("/api/signals", { cache: "no-store" });
         if (!res.ok) throw new Error("api error");
         const data = await res.json();
-        if (data && Array.isArray(data.signals)) {
-          setSignals(data.signals.filter(s => {
-            const st = String(s.status || "").toLowerCase();
-            return !["tp","sl","cancelled"].includes(st);
-          }));
-        } else {
-          setSignals([]);
-        }
+        const arr = Array.isArray(data?.signals) ? data.signals : [];
+        // sadece açık sinyaller
+        const open = arr.filter((s) => !["tp", "sl", "cancelled"].includes(String(s.status || "").toLowerCase()));
+        setSignals(open);
       } catch {
         setSignals([]);
       }
@@ -30,23 +26,22 @@ export default function Sinyal() {
     return () => clearInterval(timer);
   }, []);
 
-  const longs  = signals.filter(s => String(s.side).toUpperCase() === "LONG")
+  const longs  = signals.filter((s) => String(s.side).toUpperCase() === "LONG")
                         .sort((a,b) => (b.createdAt||0)-(a.createdAt||0));
-  const shorts = signals.filter(s => String(s.side).toUpperCase() === "SHORT")
+  const shorts = signals.filter((s) => String(s.side).toUpperCase() === "SHORT")
                         .sort((a,b) => (b.createdAt||0)-(a.createdAt||0));
 
   return (
     <main style={{minHeight:"100vh", padding:"16px"}}>
-      {/* İki sütun: SOL=SHORT, SAĞ=LONG */}
       <div style={{
         display:"grid",
         gridTemplateColumns:"1fr 1fr",
         gap:"16px",
-        maxWidth: "1200px",
-        margin: "0 auto"
+        maxWidth:"1200px",
+        margin:"0 auto"
       }}>
         <Column title="SHORT" items={shorts} />
-        <Column title="LONG"  items={longs} />
+        <Column title="LONG"  items={longs}  />
       </div>
     </main>
   );
@@ -59,7 +54,7 @@ function Column({ title, items }) {
       {items.length === 0 ? (
         <div style={{height:40, border:"1px solid #1a2033", borderRadius:12}} />
       ) : (
-        items.map(s => <Card key={s.id} s={s} />)
+        items.map((s) => <Card key={s.id} s={s} />)
       )}
     </section>
   );
@@ -68,6 +63,7 @@ function Column({ title, items }) {
 function Card({ s }) {
   const side = String(s.side || "").toUpperCase();
   const isLong = side === "LONG";
+  const dec = (v) => (v > 1000 ? 1 : 4);
   const tagStyle = {
     padding:"4px 10px",
     borderRadius:999,
@@ -76,6 +72,10 @@ function Card({ s }) {
     background:isLong ? "rgba(16,185,129,0.15)" : "rgba(244,63,94,0.15)",
     color:     isLong ? "rgb(110,231,183)"       : "rgb(252,165,165)"
   };
+
+  // TP1/2/3: API'den gelmezse göstermeyelim (boş bırakmayacağız)
+  const hasTPs = ["tp1","tp2","tp3"].every(k => typeof s[k] === "number");
+
   return (
     <article style={{
       border:"1px solid #1a2033",
@@ -88,18 +88,30 @@ function Card({ s }) {
       <div style={{display:"flex", justifyContent:"space-between", alignItems:"center"}}>
         <div style={{fontWeight:600}}>{fmtSymbol(s.symbol)}</div>
         <div style={{display:"flex", gap:12, alignItems:"center"}}>
-          <div style={{opacity:0.9}}>{fmt(s.price, s.price > 1000 ? 1 : 4)}</div>
+          <div style={{opacity:0.9}}>{fmt(s.price, dec(s.price))}</div>
           <span style={tagStyle}>{side}</span>
         </div>
       </div>
 
       <div style={{height:1, background:"#1a2033", margin:"12px 0"}} />
 
-      {/* Entry / SL / TP */}
-      <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8}}>
-        <KV k="Entry" v={fmt(s.entry, s.entry > 1000 ? 1 : 4)} />
-        <KV k="SL"    v={fmt(s.sl,    s.sl    > 1000 ? 1 : 4)} />
-        <KV k="TP"    v={fmt(s.tp,    s.tp    > 1000 ? 1 : 4)} />
+      {/* Entry / SL + TP1/TP2/TP3 */}
+      <div style={{
+        display:"grid",
+        gridTemplateColumns: hasTPs ? "repeat(5, 1fr)" : "repeat(3, 1fr)",
+        gap:8
+      }}>
+        <KV k="ENTRY" v={fmt(s.entry, dec(s.entry))} />
+        <KV k="SL"    v={fmt(s.sl,    dec(s.sl))} />
+        {hasTPs ? (
+          <>
+            <KV k="TP1"   v={fmt(s.tp1, dec(s.tp1))} />
+            <KV k="TP2"   v={fmt(s.tp2, dec(s.tp2))} />
+            <KV k="TP3"   v={fmt(s.tp3, dec(s.tp3))} />
+          </>
+        ) : (
+          <KV k="TP"    v={fmt(s.tp,   dec(s.tp))} />
+        )}
       </div>
     </article>
   );
