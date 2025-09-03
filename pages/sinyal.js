@@ -10,7 +10,7 @@ export default function Sinyal() {
     let timer;
     const load = async () => {
       try {
-        const res = await fetch("/api/signals", { cache: "no-store" });
+        const res = await fetch("/api/signals?all=1", { cache: "no-store" })
         if (!res.ok) throw new Error("api error");
         const data = await res.json();
         const arr = Array.isArray(data?.signals) ? data.signals : [];
