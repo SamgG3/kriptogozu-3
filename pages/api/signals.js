@@ -1,8 +1,9 @@
 // pages/api/signals.js
 // Binance USDT-Perp tarayıcı — 15m kapalı mum Donchian(20) kırılımı
 // Entry = HH/LL (retest), SL = pivot (fallback ATR), TP1/2/3 = R (1.0 / 1.5 / 2.0)
-// Canlı fiyat eşlemesi, 24h hacme göre sıralama, çoklu istek; opsiyonel maliyet filtresi ve risk tabanlı qty önerisi.
-// Tek dosya. Auto-order YOK.
+// Canlı fiyat + 24h hacme göre sıralama + eşzamanlı tarama
+// Opsiyonel: maliyet filtresi (fee + funding), risk tabanlı qty önerisi, TELEGRAM bildirim.
+// *** Auto-order YOK. ***
 
 export default async function handler(req, res) {
   // ---- Ayarlar (query veya ENV) ----
@@ -13,9 +14,9 @@ export default async function handler(req, res) {
 
   // Maliyet filtresi (opsiyonel)
   const ENABLE_COST_FILTER = process.env.ENABLE_COST_FILTER === "1";
-  const FEE_SIDE = (process.env.FEE_SIDE || "maker").toLowerCase(); // maker|taker
-  const FEE_MAKER = getNum(process.env.FEE_MAKER, 0.0002);          // %0.02
-  const FEE_TAKER = getNum(process.env.FEE_TAKER, 0.0004);          // %0.04
+  const FEE_SIDE  = (process.env.FEE_SIDE || "maker").toLowerCase(); // maker|taker
+  const FEE_MAKER = getNum(process.env.FEE_MAKER, 0.0002);           // %0.02
+  const FEE_TAKER = getNum(process.env.FEE_TAKER, 0.0004);           // %0.04
   const MIN_NET_EDGE_PCT = getNum(process.env.MIN_NET_EDGE_PCT, 0.0);
 
   // Risk tabanlı qty önerisi (UI göstermez, API'de _meta.qty döner)
@@ -131,10 +132,24 @@ export default async function handler(req, res) {
   // yeni üstte
   signals.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
+  // ---- (İsteğe bağlı) TELEGRAM bildirimi ----
+  // /api/signals?...&notify=1[&windowM=30&n=10]
+  let sent = 0;
+  if (req.query.notify === "1") {
+    const windowMin = getNum(req.query.windowM, 30);   // son X dakika içindeki sinyaller
+    const maxSend   = getNum(req.query.n, 10);         // en fazla kaç sinyal yollansın
+    const cutoff    = Date.now() - windowMin * 60_000;
+
+    const fresh = signals.filter(s => (s.createdAt || 0) >= cutoff).slice(0, maxSend);
+    if (fresh.length > 0) {
+      sent = await sendTelegramBatch(fresh);
+    }
+  }
+
   res.setHeader("Cache-Control", "no-store");
   res.status(200).json({
     signals,
-    meta: { scanned, returned: signals.length, totalUSDT: allUSDT.length, all: ALL }
+    meta: { scanned, returned: signals.length, totalUSDT: allUSDT.length, all: ALL, sent }
   });
 }
 
@@ -192,4 +207,41 @@ async function whoPaysFunding(symbol){
     if (!Number.isFinite(rate) || rate === 0) return null;
     return rate > 0 ? "LONG" : "SHORT";
   } catch { return null; }
+}
+
+// ---------------- TELEGRAM ----------------
+async function sendTelegramBatch(items){
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chat  = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chat) return 0;
+
+  let sent = 0;
+  for (const s of items){
+    const text =
+`📣 *Sinyal* — ${s.symbol} *${s.side}*
+Fiyat: ${fmt(s.price)}
+Entry: ${fmt(s.entry)}  |  SL: ${fmt(s.sl)}
+TP1: ${fmt(s.tp1)}  |  TP2: ${fmt(s.tp2)}  |  TP3: ${fmt(s.tp3)}
+R: ${fmt(Math.abs(s.entry - s.sl))}  |  qty≈${s._meta?.qty ? fmt(s._meta.qty) : "-"}
+15m Donchian20  •  ${new Date(s.createdAt).toISOString().replace('T',' ').slice(0,16)} UTC`;
+
+    const ok = await tgSend(token, chat, text);
+    if (ok) sent++;
+  }
+  return sent;
+}
+async function tgSend(token, chatId, text){
+  try{
+    const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" })
+    });
+    return r.ok;
+  } catch { return false; }
+}
+function fmt(v, d){
+  if (v == null || !isFinite(v)) return "—";
+  const dec = (typeof d === "number") ? d : (Math.abs(v) >= 1000 ? 1 : 4);
+  return Number(v).toLocaleString("tr-TR", { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
